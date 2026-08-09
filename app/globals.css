@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Light theme (default) */
+  --c-ink-950: 8 12 20;       /* fixed dark — used for text on accent-colored buttons in both themes */
+  --c-ink-900: 244 245 248;   /* page background */
+  --c-ink-850: 236 238 242;   /* input background */
+  --c-ink-800: 255 255 255;   /* panel background */
+  --c-ink-700: 228 231 237;   /* hover background */
+  --c-ink-600: 213 217 225;   /* track / ring background */
+  --c-ink-border: 222 226 233;
+
+  --c-paper-100: 27 35 51;    /* primary text */
+  --c-paper-300: 74 84 104;   /* secondary text */
+  --c-paper-500: 121 131 150; /* muted text / labels */
+
+  --c-signal-amber: 180 108 8;
+  --c-signal-amberDim: 146 88 12;
+  --c-signal-green: 15 148 96;
+  --c-signal-red: 211 47 55;
+  --c-signal-blue: 37 99 235;
+  --c-signal-violet: 109 62 219;
+
+  --c-grid-line: 205 210 220;
+  --c-grid-alpha: 0.55;
+  --c-chart-tooltip-bg: 255 255 255;
+  --c-chart-tooltip-border: 222 226 233;
+  --c-chart-axis: 121 131 150;
+  --c-chart-grid: 222 226 233;
+
+  color-scheme: light;
+}
+
+.dark {
+  --c-ink-950: 8 12 20;
+  --c-ink-900: 11 17 32;
+  --c-ink-850: 14 22 38;
+  --c-ink-800: 18 26 43;
+  --c-ink-700: 24 35 56;
+  --c-ink-600: 31 44 69;
+  --c-ink-border: 34 49 74;
+
+  --c-paper-100: 232 236 243;
+  --c-paper-300: 185 194 212;
+  --c-paper-500: 138 147 166;
+
+  --c-signal-amber: 242 169 59;
+  --c-signal-amberDim: 185 129 44;
+  --c-signal-green: 61 220 151;
+  --c-signal-red: 242 84 91;
+  --c-signal-blue: 91 157 242;
+  --c-signal-violet: 155 140 242;
+
+  --c-grid-line: 34 49 74;
+  --c-grid-alpha: 0.28;
+  --c-chart-tooltip-bg: 18 26 43;
+  --c-chart-tooltip-border: 34 49 74;
+  --c-chart-axis: 138 147 166;
+  --c-chart-grid: 31 44 69;
+
+  color-scheme: dark;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background-color: rgb(var(--c-ink-900));
+  background-image:
+    linear-gradient(to bottom, rgb(var(--c-grid-line) / var(--c-grid-alpha)) 1px, transparent 1px),
+    linear-gradient(to right, rgb(var(--c-grid-line) / var(--c-grid-alpha)) 1px, transparent 1px);
+  background-size: 42px 42px;
+  background-attachment: fixed;
+  transition: background-color 0.25s ease;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-ink-border));
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--c-ink-600));
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--c-signal-amber));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-rise {
+  animation: rise 0.35s ease-out both;
+}
+
+@keyframes needle-sweep {
+  from { stroke-dashoffset: var(--dash-total); }
+  to { stroke-dashoffset: var(--dash-offset); }
+}
+.animate-sweep {
+  animation: needle-sweep 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
