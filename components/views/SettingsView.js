@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Download, Trash2, ShieldCheck, Wallet2, LogOut, UserCircle, RotateCcw, CalendarClock } from 'lucide-react';
+import { Download, Trash2, ShieldCheck, Wallet2, LogOut, UserCircle, RotateCcw, CalendarClock, Archive, ChevronRight } from 'lucide-react';
 import Panel from '@/components/ui/Panel';
 import {
   formatINR, getCategory, clampCycleResetDay, cycleEndDate, daysLeftInCycle,
@@ -9,7 +9,7 @@ import {
 } from '@/lib/utils';
 import { useToast } from '@/components/ui/Toast';
 
-export default function SettingsView({ store }) {
+export default function SettingsView({ store, goTo }) {
   const { settings, updateSettings, categories, transactions, userEmail, clearAllData, signOut } = store;
   const toast = useToast();
   const [income, setIncome] = useState(settings.monthlyIncome || '');
@@ -179,6 +179,28 @@ export default function SettingsView({ store }) {
             — {daysLeftInCycle(currentMonthKey(), clampCycleResetDay(resetDay))} day(s) from today.
           </p>
         </div>
+      </Panel>
+
+      <Panel title="Backups" eyebrow="frozen, read-only copies of your ledger">
+        <button
+          onClick={() => goTo?.('backups')}
+          className="w-full flex items-center gap-2.5 rounded-xl border border-ink-border bg-ink-850 hover:bg-ink-700 px-4 py-3 text-left transition-colors"
+        >
+          <span className="w-8 h-8 rounded-lg bg-signal-blue/12 flex items-center justify-center shrink-0">
+            <Archive size={15} className="text-signal-blue" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm text-paper-100">
+              {store.snapshots?.length
+                ? `${store.snapshots.length} snapshot(s) archived`
+                : 'Take your first snapshot'}
+            </span>
+            <span className="block text-[11px] font-mono text-paper-500 mt-0.5">
+              append-only · viewing never changes live data
+            </span>
+          </span>
+          <ChevronRight size={15} className="text-paper-500 shrink-0" />
+        </button>
       </Panel>
 
       <Panel title="Export" eyebrow="download a copy of your data">
