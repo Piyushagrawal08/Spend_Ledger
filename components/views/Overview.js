@@ -1,24 +1,48 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { TrendingUp, Wallet, CalendarDays, Flame, ArrowRight, Sparkles } from 'lucide-react';
+import {
+  TrendingUp, TrendingDown, Wallet, CalendarDays, Flame, ArrowRight, Sparkles,
+  Coins, Minus, CalendarClock,
+} from 'lucide-react';
 import Panel from '@/components/ui/Panel';
 import Gauge from '@/components/ui/Gauge';
 import MonthSwitcher from '@/components/ui/MonthSwitcher';
+import MultiSelect from '@/components/ui/MultiSelect';
 import { CategoryIcon } from '@/lib/icons';
 import { useTheme } from '@/lib/ThemeContext';
 import {
   formatINR, formatCompactINR, formatDateNice, sum, groupBy, getCategory,
-  daysInMonth, elapsedDaysInMonth, isCurrentMonth, dayOfMonth,
+  daysInMonth, elapsedDaysInMonth, dayOfMonth,
+  cycleEndDate, daysLeftInCycle, isCycleOpen, cycleLengthDays,
+  shiftMonth, lastMonthKeys, monthShortLabel, monthLabel, pctChange,
+  DEFAULT_CYCLE_RESET_DAY,
 } from '@/lib/utils';
 
+const UNCAT_ID = '__uncategorized__';
+const TREND_MONTHS = 6;
+
 export default function Overview({ store, monthKey, setMonthKey, goTo }) {
-  const { transactions, categories, budgetFor } = store;
+  const { transactions, categories, budgetFor, settings } = store;
   const { theme } = useTheme();
+  const resetDay = settings?.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY;
+
   const chartColors = theme === 'dark'
-    ? { grid: '#1F2C45', axis: '#8A93A6', tooltipBg: '#121A2B', tooltipBorder: '#22314A', tooltipLabel: '#E8ECF3', cursor: 'rgba(242,169,59,0.08)' }
-    : { grid: '#DEE2E9', axis: '#79839A', tooltipBg: '#FFFFFF', tooltipBorder: '#DEE2E9', tooltipLabel: '#1B2333', cursor: 'rgba(180,108,8,0.06)' };
+    ? { grid: '#1F2C45', axis: '#8A93A6', tooltipBg: '#121A2B', tooltipBorder: '#22314A', tooltipLabel: '#E8ECF3', cursor: 'rgba(242,169,59,0.08)', muted: '#2C3A54' }
+    : { grid: '#DEE2E9', axis: '#79839A', tooltipBg: '#FFFFFF', tooltipBorder: '#DEE2E9', tooltipLabel: '#1B2333', cursor: 'rgba(180,108,8,0.06)', muted: '#C8CEDA' };
+
+  // Category options shared by both filters — "Uncategorized" only when it applies.
+  const catOptions = useMemo(() => {
+    const opts = categories.map((c) => ({ id: c.id, name: c.name, color: c.color }));
+    if (transactions.some((t) => !t.categoryId)) {
+      opts.push({ id: UNCAT_ID, name: 'Uncategorized', color: '#8A93A6' });
+    }
+    return opts;
+  }, [categories, transactions]);
+
+  const [splitFilter, setSplitFilter] = useState([]);   // "Where it went"
+  const [trendFilter, setTrendFilter] = useState([]);   // "Month on month"
 
   const monthTx = useMemo(
     () => transactions.filter((t) => t.date.startsWith(monthKey)),
@@ -28,34 +52,93 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   const totalSpent = sum(monthTx, (t) => t.amount);
   const totalBudget = sum(categories, (c) => budgetFor(monthKey, c.id));
   const remaining = totalBudget - totalSpent;
+
+  // ── Cycle maths: a month runs until `resetDay` of the *next* month ──
   const daysTotal = daysInMonth(monthKey);
+  const cycleDays = cycleLengthDays(monthKey, resetDay);
+  const cycleEnd = cycleEndDate(monthKey, resetDay);
+  const cycleOpen = isCycleOpen(monthKey, resetDay);
   const daysElapsed = Math.max(elapsedDaysInMonth(monthKey), 1);
-  const daysLeft = Math.max(daysTotal - daysElapsed, 0);
+  const daysLeft = daysLeftInCycle(monthKey, resetDay);
   const dailyAvg = totalSpent / daysElapsed;
-  const projected = isCurrentMonth(monthKey) ? dailyAvg * daysTotal : totalSpent;
+  // What is still spendable per day without breaking the allocation.
+  const leftPerDay = daysLeft > 0 ? remaining / daysLeft : null;
+  const projected = cycleOpen ? dailyAvg * cycleDays : totalSpent;
   const pct = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
 
+  // ── Month-over-month ────────────────────────────────────────────────
+  const prevMonthKey = shiftMonth(monthKey, -1);
+  const prevMonthTx = useMemo(
+    () => transactions.filter((t) => t.date.startsWith(prevMonthKey)),
+    [transactions, prevMonthKey]
+  );
+  const prevTotal = sum(prevMonthTx, (t) => t.amount);
+  const momDelta = totalSpent - prevTotal;
+  const momPct = pctChange(totalSpent, prevTotal);
+
+  // Like-for-like: the same number of days into each month, so a half-finished
+  // month is never compared against a full one.
+  const prevSameSpan = useMemo(
+    () => sum(prevMonthTx.filter((t) => dayOfMonth(t.date) <= daysElapsed), (t) => t.amount),
+    [prevMonthTx, daysElapsed]
+  );
+  const paceDelta = totalSpent - prevSameSpan;
+  const pacePct = pctChange(totalSpent, prevSameSpan);
+  const partialMonth = cycleOpen && daysElapsed < daysTotal;
+
+  const movers = useMemo(() => {
+    const now = groupBy(monthTx, (t) => t.categoryId || UNCAT_ID);
+    const before = groupBy(prevMonthTx, (t) => t.categoryId || UNCAT_ID);
+    const ids = new Set([...Object.keys(now), ...Object.keys(before)]);
+    return [...ids]
+      .map((id) => {
+        const cat = id === UNCAT_ID
+          ? { id: UNCAT_ID, name: 'Uncategorized', color: '#8A93A6', icon: 'MoreHorizontal' }
+          : getCategory(categories, id);
+        const current = sum(now[id] || [], (t) => t.amount);
+        const previous = sum(before[id] || [], (t) => t.amount);
+        return { ...cat, id, current, previous, delta: current - previous };
+      })
+      .filter((m) => m.delta !== 0)
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  }, [monthTx, prevMonthTx, categories]);
+
+  // ── "Where it went" (multi-select filtered) ─────────────────────────
   const byCategory = useMemo(() => {
-    const grouped = groupBy(monthTx, (t) => t.categoryId);
-    return categories
-      .map((c) => ({
-        ...c,
-        spent: sum(grouped[c.id] || [], (t) => t.amount),
-        budget: budgetFor(monthKey, c.id),
-      }))
+    const grouped = groupBy(monthTx, (t) => t.categoryId || UNCAT_ID);
+    const rows = categories.map((c) => ({
+      ...c,
+      spent: sum(grouped[c.id] || [], (t) => t.amount),
+      budget: budgetFor(monthKey, c.id),
+    }));
+    const uncat = sum(grouped[UNCAT_ID] || [], (t) => t.amount);
+    if (uncat > 0) {
+      rows.push({ id: UNCAT_ID, name: 'Uncategorized', color: '#8A93A6', icon: 'MoreHorizontal', spent: uncat, budget: 0 });
+    }
+    return rows
       .filter((c) => c.spent > 0 || c.budget > 0)
       .sort((a, b) => b.spent - a.spent);
   }, [monthTx, categories, budgetFor, monthKey]);
 
-  const pieData = byCategory.filter((c) => c.spent > 0).map((c) => ({ name: c.name, value: c.spent, color: c.color }));
+  const splitRows = useMemo(
+    () => byCategory.filter((c) => splitFilter.length === 0 || splitFilter.includes(c.id)),
+    [byCategory, splitFilter]
+  );
+  const pieData = splitRows.filter((c) => c.spent > 0).map((c) => ({ name: c.name, value: c.spent, color: c.color }));
+  const pieTotal = sum(pieData, (d) => d.value);
 
-  const dailySeries = useMemo(() => {
-    const grouped = groupBy(monthTx, (t) => dayOfMonth(t.date));
-    return Array.from({ length: daysTotal }, (_, i) => {
-      const d = i + 1;
-      return { day: d, amount: sum(grouped[d] || [], (t) => t.amount) };
-    });
-  }, [monthTx, daysTotal]);
+  // ── Month-to-month trend (multi-select filtered) ────────────────────
+  const trendData = useMemo(() => {
+    const matches = (t) => trendFilter.length === 0 || trendFilter.includes(t.categoryId || UNCAT_ID);
+    return lastMonthKeys(monthKey, TREND_MONTHS).map((mk) => ({
+      monthKey: mk,
+      label: monthShortLabel(mk),
+      amount: sum(transactions.filter((t) => t.date.startsWith(mk) && matches(t)), (t) => t.amount),
+    }));
+  }, [transactions, monthKey, trendFilter]);
+
+  const trendAvg = trendData.length ? sum(trendData, (d) => d.amount) / trendData.length : 0;
+  const trendHasData = trendData.some((d) => d.amount > 0);
 
   const topCategory = byCategory[0];
   const recent = monthTx.slice(0, 5);
@@ -70,8 +153,21 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         <MonthSwitcher monthKey={monthKey} onChange={setMonthKey} />
       </div>
 
+      {/* Cycle banner */}
+      <div className="flex items-center gap-2 rounded-xl border border-ink-border bg-ink-850/50 px-3.5 py-2 text-[11px] font-mono text-paper-500">
+        <CalendarClock size={12} className="text-signal-blue shrink-0" />
+        <span className="min-w-0 truncate">
+          {monthLabel(monthKey)} cycle · resets{' '}
+          <span className="text-paper-100">{formatDateNice(cycleEnd)}</span>
+          {cycleOpen && <> · <span className="text-paper-100">{daysLeft} day(s) left</span></>}
+        </span>
+        <button onClick={() => goTo('settings')} className="ml-auto text-signal-amber hover:text-amber-300 shrink-0">
+          change
+        </button>
+      </div>
+
       {/* KPI row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
         <Kpi
           icon={Wallet}
           label="Total spent"
@@ -83,7 +179,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
           icon={TrendingUp}
           label="Remaining balance"
           value={formatINR(remaining)}
-          sub={remaining < 0 ? 'over allocated budget' : `${daysLeft} day(s) left`}
+          sub={remaining < 0 ? 'over allocated budget' : cycleOpen ? `${daysLeft} day(s) to reset` : 'cycle closed'}
           accent={remaining < 0 ? 'red' : 'green'}
         />
         <Kpi
@@ -94,19 +190,45 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
           accent="blue"
         />
         <Kpi
+          icon={Coins}
+          label="Avg left / day"
+          value={leftPerDay === null ? '—' : formatINR(Math.max(leftPerDay, 0))}
+          sub={
+            leftPerDay === null
+              ? 'cycle already reset'
+              : leftPerDay < 0
+                ? `${formatINR(Math.abs(remaining))} over with ${daysLeft} day(s) to go`
+                : `over the next ${daysLeft} day(s)`
+          }
+          accent={leftPerDay === null ? 'violet' : leftPerDay < 0 ? 'red' : leftPerDay < dailyAvg ? 'amber' : 'green'}
+        />
+        <Kpi
           icon={CalendarDays}
-          label={isCurrentMonth(monthKey) ? 'Projected month-end' : 'Days in month'}
-          value={isCurrentMonth(monthKey) ? formatINR(projected) : String(daysTotal)}
-          sub={isCurrentMonth(monthKey) ? (projected > totalBudget && totalBudget > 0 ? 'trending over budget' : 'trending on track') : 'closed month'}
-          accent={isCurrentMonth(monthKey) && projected > totalBudget && totalBudget > 0 ? 'red' : 'violet'}
+          label={cycleOpen ? 'Projected at reset' : 'Cycle length'}
+          value={cycleOpen ? formatINR(projected) : `${cycleDays} days`}
+          sub={cycleOpen ? (projected > totalBudget && totalBudget > 0 ? 'trending over budget' : 'trending on track') : 'closed cycle'}
+          accent={cycleOpen && projected > totalBudget && totalBudget > 0 ? 'red' : 'violet'}
         />
       </div>
 
       <div className="grid lg:grid-cols-5 gap-5">
         {/* Category breakdown */}
-        <Panel title="Where it went" eyebrow="category split" className="lg:col-span-2">
+        <Panel
+          title="Where it went"
+          eyebrow={splitFilter.length > 0 ? `${splitFilter.length} of ${byCategory.length} categories` : 'category split'}
+          className="lg:col-span-2"
+          action={
+            <MultiSelect
+              options={catOptions}
+              selected={splitFilter}
+              onChange={setSplitFilter}
+              label="Categories"
+              allLabel="All categories"
+            />
+          }
+        >
           {pieData.length === 0 ? (
-            <EmptyChart label="No spends logged yet this month" />
+            <EmptyChart label={splitFilter.length > 0 ? 'No spends in the selected categories' : 'No spends logged yet this month'} />
           ) : (
             <div className="flex items-center gap-2">
               <div className="w-[130px] h-[130px] shrink-0 relative">
@@ -125,7 +247,12 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  <span className="font-mono text-[13px] text-paper-100 font-semibold">{formatCompactINR(totalSpent)}</span>
+                  <span className="font-mono text-[13px] text-paper-100 font-semibold">{formatCompactINR(pieTotal)}</span>
+                  {splitFilter.length > 0 && totalSpent > 0 && (
+                    <span className="font-mono text-[9px] text-paper-500 mt-0.5">
+                      {Math.round((pieTotal / totalSpent) * 100)}% of spend
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="flex-1 space-y-1.5 min-w-0">
@@ -136,6 +263,9 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
                     <span className="text-paper-100 font-mono">{formatCompactINR(d.value)}</span>
                   </div>
                 ))}
+                {pieData.length > 6 && (
+                  <div className="text-[10px] font-mono text-paper-600 pt-0.5">+{pieData.length - 6} more</div>
+                )}
               </div>
             </div>
           )}
@@ -147,7 +277,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
             <EmptyChart label="Log a spend to see your daily trend" />
           ) : (
             <ResponsiveContainer width="100%" height={168}>
-              <BarChart data={dailySeries} barCategoryGap={2}>
+              <BarChart data={dailySeriesOf(monthTx, daysTotal)} barCategoryGap={2}>
                 <CartesianGrid strokeDasharray="3 6" stroke={chartColors.grid} vertical={false} />
                 <XAxis dataKey="day" tick={{ fill: chartColors.axis, fontSize: 10 }} axisLine={{ stroke: chartColors.tooltipBorder }} tickLine={false} interval={2} />
                 <YAxis tick={{ fill: chartColors.axis, fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCompactINR(v)} width={44} />
@@ -160,6 +290,105 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
                 <Bar dataKey="amount" radius={[3, 3, 0, 0]} fill="#F2A93B" />
               </BarChart>
             </ResponsiveContainer>
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid lg:grid-cols-5 gap-5">
+        {/* Month-to-month spending */}
+        <Panel
+          title="Month on month"
+          eyebrow={`last ${TREND_MONTHS} months`}
+          className="lg:col-span-3"
+          action={
+            <MultiSelect
+              options={catOptions}
+              selected={trendFilter}
+              onChange={setTrendFilter}
+              label="Categories"
+              allLabel="All categories"
+            />
+          }
+        >
+          {!trendHasData ? (
+            <EmptyChart label={trendFilter.length > 0 ? 'Nothing spent in these categories yet' : 'Not enough history yet'} />
+          ) : (
+            <>
+              <ResponsiveContainer width="100%" height={172}>
+                <BarChart data={trendData} barCategoryGap="28%">
+                  <CartesianGrid strokeDasharray="3 6" stroke={chartColors.grid} vertical={false} />
+                  <XAxis dataKey="label" tick={{ fill: chartColors.axis, fontSize: 10 }} axisLine={{ stroke: chartColors.tooltipBorder }} tickLine={false} />
+                  <YAxis tick={{ fill: chartColors.axis, fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCompactINR(v)} width={44} />
+                  <Tooltip
+                    cursor={{ fill: chartColors.cursor }}
+                    contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 10, fontSize: 12 }}
+                    formatter={(v) => formatINR(v)}
+                  />
+                  <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
+                    {trendData.map((d) => (
+                      <Cell
+                        key={d.monthKey}
+                        fill={d.monthKey === monthKey ? '#F2A93B' : chartColors.muted}
+                        cursor="pointer"
+                        onClick={() => setMonthKey(d.monthKey)}
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="flex items-center justify-between text-[10px] font-mono text-paper-500 mt-2 pt-2 border-t border-ink-border">
+                <span>{TREND_MONTHS}-month average {formatINR(trendAvg)}</span>
+                <span className="hidden sm:inline">tap a bar to jump to that month</span>
+              </div>
+            </>
+          )}
+        </Panel>
+
+        {/* Versus last month */}
+        <Panel title="Versus last month" eyebrow={monthShortLabel(prevMonthKey)} className="lg:col-span-2">
+          {prevTotal === 0 && totalSpent === 0 ? (
+            <EmptyChart label="No spend to compare yet" />
+          ) : (
+            <div className="space-y-3">
+              <DeltaHeadline delta={momDelta} pctVal={momPct} prevTotal={prevTotal} />
+
+              {partialMonth && (
+                <div className="rounded-xl border border-ink-border bg-ink-850/60 px-3 py-2.5">
+                  <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono mb-1">
+                    like-for-like · first {daysElapsed} day(s)
+                  </div>
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className={`font-mono text-sm font-semibold ${paceDelta > 0 ? 'text-signal-red' : paceDelta < 0 ? 'text-signal-green' : 'text-paper-300'}`}>
+                      {paceDelta > 0 ? '+' : paceDelta < 0 ? '−' : ''}{formatINR(Math.abs(paceDelta))}
+                    </span>
+                    {pacePct !== null && (
+                      <span className="text-[11px] font-mono text-paper-500">
+                        {pacePct > 0 ? '+' : ''}{pacePct.toFixed(0)}% vs {formatCompactINR(prevSameSpan)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {movers.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono mb-1.5">biggest movers</div>
+                  <div className="space-y-1.5">
+                    {movers.slice(0, 4).map((m) => (
+                      <div key={m.id} className="flex items-center gap-2 text-xs">
+                        <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0" style={{ background: `${m.color}22` }}>
+                          <CategoryIcon name={m.icon} size={11} style={{ color: m.color }} />
+                        </span>
+                        <span className="text-paper-300 truncate flex-1">{m.name}</span>
+                        <span className={`font-mono ${m.delta > 0 ? 'text-signal-red' : 'text-signal-green'}`}>
+                          {m.delta > 0 ? '+' : '−'}{formatCompactINR(Math.abs(m.delta))}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </Panel>
       </div>
@@ -181,10 +410,10 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
           ) : (
             <div className="grid sm:grid-cols-2 gap-3">
               {byCategory.slice(0, 6).map((c) => {
-                const pct = c.budget > 0 ? (c.spent / c.budget) * 100 : c.spent > 0 ? 100 : 0;
+                const catPct = c.budget > 0 ? (c.spent / c.budget) * 100 : c.spent > 0 ? 100 : 0;
                 return (
                   <div key={c.id} className="flex items-center gap-3 rounded-xl border border-ink-border bg-ink-850/60 px-3 py-2.5">
-                    <Gauge percent={pct} size={44} stroke={5} color={c.color} />
+                    <Gauge percent={catPct} size={44} stroke={5} color={c.color} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 text-xs text-paper-100 font-medium truncate">
                         <CategoryIcon name={c.icon} size={12} style={{ color: c.color }} />
@@ -255,6 +484,40 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   );
 }
 
+function dailySeriesOf(monthTx, daysTotal) {
+  const grouped = groupBy(monthTx, (t) => dayOfMonth(t.date));
+  return Array.from({ length: daysTotal }, (_, i) => {
+    const d = i + 1;
+    return { day: d, amount: sum(grouped[d] || [], (t) => t.amount) };
+  });
+}
+
+function DeltaHeadline({ delta, pctVal, prevTotal }) {
+  const up = delta > 0;
+  const flat = delta === 0;
+  const Icon = flat ? Minus : up ? TrendingUp : TrendingDown;
+  const tone = flat ? 'text-paper-300' : up ? 'text-signal-red' : 'text-signal-green';
+  return (
+    <div className="flex items-start gap-2.5">
+      <span className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${flat ? 'bg-ink-700' : up ? 'bg-signal-red/12' : 'bg-signal-green/12'}`}>
+        <Icon size={17} className={tone} strokeWidth={2.2} />
+      </span>
+      <div className="min-w-0">
+        <div className={`font-display text-xl font-semibold ${tone}`}>
+          {flat ? 'No change' : `${up ? '+' : '−'}${formatINR(Math.abs(delta))}`}
+        </div>
+        <div className="text-[11px] text-paper-500 font-mono mt-0.5">
+          {pctVal === null
+            ? 'nothing spent last month to compare'
+            : flat
+              ? `same as ${formatCompactINR(prevTotal)} last month`
+              : `${pctVal > 0 ? '+' : ''}${pctVal.toFixed(0)}% ${up ? 'more' : 'less'} than ${formatCompactINR(prevTotal)}`}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Kpi({ icon: Icon, label, value, sub, accent }) {
   const colors = {
     amber: 'text-signal-amber',
@@ -266,11 +529,11 @@ function Kpi({ icon: Icon, label, value, sub, accent }) {
   return (
     <Panel noPad>
       <div className="p-4">
-        <div className="flex items-center justify-between mb-2.5">
-          <span className="text-[10px] uppercase tracking-wide text-paper-500 font-mono">{label}</span>
-          <Icon size={14} className={colors[accent]} />
+        <div className="flex items-center justify-between mb-2.5 gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-paper-500 font-mono truncate">{label}</span>
+          <Icon size={14} className={`${colors[accent]} shrink-0`} />
         </div>
-        <div className="font-display text-lg sm:text-xl font-semibold text-paper-100 truncate">{value}</div>
+        <div className="font-display text-base sm:text-lg xl:text-xl font-semibold text-paper-100 truncate">{value}</div>
         <div className="text-[11px] text-paper-500 mt-1 truncate">{sub}</div>
       </div>
     </Panel>
