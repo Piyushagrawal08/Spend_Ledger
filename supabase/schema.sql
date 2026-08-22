@@ -1,6 +1,15 @@
 -- SpendLedger schema
 -- Run this once in your Supabase project's SQL editor (Dashboard -> SQL Editor -> New query -> paste -> Run).
 -- Safe to re-run: uses IF NOT EXISTS / OR REPLACE / DROP IF EXISTS guards.
+--
+-- ALREADY SET UP? Run supabase/migrations/001_cycle_reset_and_snapshots.sql
+-- instead. It adds only what is new and contains no DROP at all, so it cannot
+-- touch your existing rows, policies or triggers.
+--
+-- Note on Supabase's "destructive operations" warning for this file: the only
+-- DROP statements below are `drop policy` / `drop trigger`, each immediately
+-- followed by recreating that same object. There is no DROP TABLE, DROP COLUMN,
+-- DELETE or TRUNCATE anywhere, so no row is ever removed or changed.
 
 create extension if not exists "pgcrypto";
 
