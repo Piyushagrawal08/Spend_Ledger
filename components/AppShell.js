@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, Settings as SettingsIcon, Gauge as GaugeIcon } from 'lucide-react';
+import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, Archive, Settings as SettingsIcon, Gauge as GaugeIcon } from 'lucide-react';
 import { useFinanceStore } from '@/lib/useFinanceStore';
 import { currentMonthKey } from '@/lib/utils';
 import { ToastProvider } from '@/components/ui/Toast';
@@ -12,6 +12,7 @@ import AddExpense from '@/components/views/AddExpense';
 import Transactions from '@/components/views/Transactions';
 import Budgets from '@/components/views/Budgets';
 import Categories from '@/components/views/Categories';
+import Backups from '@/components/views/Backups';
 import SettingsView from '@/components/views/SettingsView';
 
 const NAV_ITEMS = [
@@ -20,6 +21,7 @@ const NAV_ITEMS = [
   { id: 'transactions', label: 'Ledger', icon: ListChecks },
   { id: 'budgets', label: 'Budgets', icon: PieChart },
   { id: 'categories', label: 'Categories', icon: Tags },
+  { id: 'backups', label: 'Backups', icon: Archive },
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
@@ -106,13 +108,14 @@ function AppInner() {
           {tab === 'transactions' && <Transactions {...viewProps} />}
           {tab === 'budgets' && <Budgets {...viewProps} />}
           {tab === 'categories' && <Categories {...viewProps} />}
+          {tab === 'backups' && <Backups {...viewProps} />}
           {tab === 'settings' && <SettingsView {...viewProps} />}
         </div>
       </main>
 
       {/* Mobile bottom nav */}
       <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-ink-800/95 backdrop-blur border-t border-ink-border px-2 py-1.5 flex items-center justify-between">
-        {NAV_ITEMS.filter((i) => i.id !== 'settings').map((item) => {
+        {NAV_ITEMS.filter((i) => i.id !== 'settings' && i.id !== 'backups').map((item) => {
           const Icon = item.icon;
           const active = tab === item.id;
           const isAdd = item.id === 'add';

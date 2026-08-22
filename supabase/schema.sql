@@ -135,3 +135,60 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- ── Ledger snapshots (backups) ─────────────────────────────────────────
+-- Point-in-time copies of the ledger. A snapshot stores the whole ledger
+-- as self-contained JSON — including the categories as they were named
+-- and coloured at the time — so later renames or deletions in the live
+-- tables can never change what a snapshot shows.
+--
+-- Snapshots are append-only by design: there is no UPDATE policy, and the
+-- trigger below rejects updates outright. Editing your live ledger, or
+-- viewing an archive in the app, cannot alter a stored snapshot.
+
+create table if not exists public.ledger_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  label text not null default '',
+  source text not null default 'app',         -- 'app' | 'script'
+  payload jsonb not null,                     -- { categories, transactions, budgets, totals, settings }
+  tx_count integer not null default 0,
+  total_amount numeric not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_snapshots_user_created
+  on public.ledger_snapshots (user_id, created_at desc);
+
+alter table public.ledger_snapshots enable row level security;
+
+-- Granular policies: read / create / delete your own, but never update.
+drop policy if exists ledger_snapshots_owner on public.ledger_snapshots;
+drop policy if exists ledger_snapshots_read on public.ledger_snapshots;
+drop policy if exists ledger_snapshots_insert on public.ledger_snapshots;
+drop policy if exists ledger_snapshots_delete on public.ledger_snapshots;
+
+create policy ledger_snapshots_read on public.ledger_snapshots
+  for select using (auth.uid() = user_id);
+
+create policy ledger_snapshots_insert on public.ledger_snapshots
+  for insert with check (auth.uid() = user_id);
+
+create policy ledger_snapshots_delete on public.ledger_snapshots
+  for delete using (auth.uid() = user_id);
+
+-- Belt and braces: reject UPDATE at the table level, so a snapshot stays
+-- byte-for-byte what it was even if a policy is ever loosened by mistake.
+create or replace function public.reject_snapshot_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'ledger_snapshots rows are immutable; create a new snapshot instead';
+end;
+$$;
+
+drop trigger if exists ledger_snapshots_no_update on public.ledger_snapshots;
+create trigger ledger_snapshots_no_update
+  before update on public.ledger_snapshots
+  for each row execute procedure public.reject_snapshot_update();

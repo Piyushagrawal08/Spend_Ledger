@@ -5,3 +5,6 @@ out
 .vercel
 *.log
 .DS_Store
+
+# Ledger backups contain real spend data — keep them out of the public repo.
+backups/*.json
