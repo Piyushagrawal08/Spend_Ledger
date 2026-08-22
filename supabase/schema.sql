@@ -47,8 +47,26 @@ create table if not exists public.user_settings (
   user_id uuid primary key references auth.users(id) on delete cascade,
   monthly_income numeric not null default 0,
   currency text not null default 'INR',
-  carry_forward boolean not null default false
+  carry_forward boolean not null default false,
+  -- Day of the following month on which the spend cycle resets (default the 7th).
+  -- "Remaining days" counts from today up to this date, not to the month end.
+  cycle_reset_day smallint not null default 7 check (cycle_reset_day between 1 and 28)
 );
+
+-- Migration for projects created before the spend-cycle setting existed:
+alter table public.user_settings
+  add column if not exists cycle_reset_day smallint not null default 7;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'user_settings_cycle_reset_day_check'
+  ) then
+    alter table public.user_settings
+      add constraint user_settings_cycle_reset_day_check
+      check (cycle_reset_day between 1 and 28);
+  end if;
+end $$;
 
 create index if not exists idx_transactions_user_date on public.transactions (user_id, date desc);
 create index if not exists idx_categories_user on public.categories (user_id);
