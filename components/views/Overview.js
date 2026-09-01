@@ -14,8 +14,8 @@ import { CategoryIcon } from '@/lib/icons';
 import { useTheme } from '@/lib/ThemeContext';
 import {
   formatINR, formatCompactINR, formatDateNice, sum, groupBy, getCategory,
-  daysInMonth, elapsedDaysInMonth, dayOfMonth,
-  cycleEndDate, daysLeftInCycle, isCycleOpen, cycleLengthDays,
+  cycleEndDate, cycleLengthDays, cycleRangeLabel,
+  cycleDateAtOffset, elapsedDaysInCycle, daysLeftInCycle, isCycleOpen, filterCycle,
   shiftMonth, lastMonthKeys, monthShortLabel, monthLabel, pctChange,
   DEFAULT_CYCLE_RESET_DAY,
 } from '@/lib/utils';
@@ -44,21 +44,24 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   const [splitFilter, setSplitFilter] = useState([]);   // "Where it went"
   const [trendFilter, setTrendFilter] = useState([]);   // "Month on month"
 
+  // Everything below is scoped to the *cycle*, not the calendar month.
   const monthTx = useMemo(
-    () => transactions.filter((t) => t.date.startsWith(monthKey)),
-    [transactions, monthKey]
+    () => filterCycle(transactions, monthKey, resetDay),
+    [transactions, monthKey, resetDay]
   );
 
   const totalSpent = sum(monthTx, (t) => t.amount);
   const totalBudget = sum(categories, (c) => budgetFor(monthKey, c.id));
   const remaining = totalBudget - totalSpent;
 
-  // ── Cycle maths: a month runs until `resetDay` of the *next* month ──
-  const daysTotal = daysInMonth(monthKey);
+  // ── Cycle maths ─────────────────────────────────────────────────────
+  // The window is [resetDay of this month, resetDay of next month), so every
+  // figure below counts days of the cycle rather than days of the month.
   const cycleDays = cycleLengthDays(monthKey, resetDay);
   const cycleEnd = cycleEndDate(monthKey, resetDay);
   const cycleOpen = isCycleOpen(monthKey, resetDay);
-  const daysElapsed = Math.max(elapsedDaysInMonth(monthKey), 1);
+  const elapsed = elapsedDaysInCycle(monthKey, resetDay);
+  const daysElapsed = Math.max(elapsed, 1);
   const daysLeft = daysLeftInCycle(monthKey, resetDay);
   const dailyAvg = totalSpent / daysElapsed;
   // What is still spendable per day without breaking the allocation.
@@ -66,29 +69,41 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   const projected = cycleOpen ? dailyAvg * cycleDays : totalSpent;
   const pct = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
 
-  // ── Month-over-month ────────────────────────────────────────────────
+  // ── Cycle-over-cycle ────────────────────────────────────────────────
   const prevMonthKey = shiftMonth(monthKey, -1);
   const prevMonthTx = useMemo(
-    () => transactions.filter((t) => t.date.startsWith(prevMonthKey)),
-    [transactions, prevMonthKey]
+    () => filterCycle(transactions, prevMonthKey, resetDay),
+    [transactions, prevMonthKey, resetDay]
   );
   const prevTotal = sum(prevMonthTx, (t) => t.amount);
-  const momDelta = totalSpent - prevTotal;
-  const momPct = pctChange(totalSpent, prevTotal);
+  const fullDelta = totalSpent - prevTotal;
+  const fullPct = pctChange(totalSpent, prevTotal);
 
-  // Like-for-like: the same number of days into each month, so a half-finished
-  // month is never compared against a full one.
-  const prevSameSpan = useMemo(
-    () => sum(prevMonthTx.filter((t) => dayOfMonth(t.date) <= daysElapsed), (t) => t.amount),
-    [prevMonthTx, daysElapsed]
-  );
+  // Like-for-like: the same number of days *into the cycle*, so a cycle still
+  // running is only ever compared against the same stretch of the last one.
+  // Cycles differ in length (28–31 days), so this counts by day offset from
+  // each cycle's own start date, not by day-of-month.
+  const prevSameSpan = useMemo(() => {
+    const cutoff = cycleDateAtOffset(prevMonthKey, resetDay, elapsed); // exclusive
+    return sum(prevMonthTx.filter((t) => t.date < cutoff), (t) => t.amount);
+  }, [prevMonthTx, prevMonthKey, resetDay, elapsed]);
+  const prevSameSpanDate = cycleDateAtOffset(prevMonthKey, resetDay, Math.max(elapsed - 1, 0));
   const paceDelta = totalSpent - prevSameSpan;
   const pacePct = pctChange(totalSpent, prevSameSpan);
-  const partialMonth = cycleOpen && daysElapsed < daysTotal;
+  const partialCycle = cycleOpen && elapsed < cycleDays;
+
+  // While a cycle is mid-flight the headline is the like-for-like number —
+  // comparing 26 days against a full 31 would always read as an improvement.
+  const momDelta = partialCycle ? paceDelta : fullDelta;
+  const momPct = partialCycle ? pacePct : fullPct;
+  const momBaseline = partialCycle ? prevSameSpan : prevTotal;
 
   const movers = useMemo(() => {
+    // Movers follow the same like-for-like rule as the headline.
+    const cutoff = cycleDateAtOffset(prevMonthKey, resetDay, elapsed);
+    const baseline = partialCycle ? prevMonthTx.filter((t) => t.date < cutoff) : prevMonthTx;
     const now = groupBy(monthTx, (t) => t.categoryId || UNCAT_ID);
-    const before = groupBy(prevMonthTx, (t) => t.categoryId || UNCAT_ID);
+    const before = groupBy(baseline, (t) => t.categoryId || UNCAT_ID);
     const ids = new Set([...Object.keys(now), ...Object.keys(before)]);
     return [...ids]
       .map((id) => {
@@ -101,7 +116,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
       })
       .filter((m) => m.delta !== 0)
       .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-  }, [monthTx, prevMonthTx, categories]);
+  }, [monthTx, prevMonthTx, prevMonthKey, resetDay, elapsed, partialCycle, categories]);
 
   // ── "Where it went" (multi-select filtered) ─────────────────────────
   const byCategory = useMemo(() => {
@@ -133,9 +148,18 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
     return lastMonthKeys(monthKey, TREND_MONTHS).map((mk) => ({
       monthKey: mk,
       label: monthShortLabel(mk),
-      amount: sum(transactions.filter((t) => t.date.startsWith(mk) && matches(t)), (t) => t.amount),
+      amount: sum(filterCycle(transactions, mk, resetDay).filter(matches), (t) => t.amount),
     }));
-  }, [transactions, monthKey, trendFilter]);
+  }, [transactions, monthKey, trendFilter, resetDay]);
+
+  // One bar per day of the cycle, labelled by its real calendar date.
+  const dailySeries = useMemo(() => {
+    const grouped = groupBy(monthTx, (t) => t.date);
+    return Array.from({ length: cycleDays }, (_, i) => {
+      const date = cycleDateAtOffset(monthKey, resetDay, i);
+      return { day: Number(date.slice(8, 10)), date, amount: sum(grouped[date] || [], (t) => t.amount) };
+    });
+  }, [monthTx, monthKey, resetDay, cycleDays]);
 
   const trendAvg = trendData.length ? sum(trendData, (d) => d.amount) / trendData.length : 0;
   const trendHasData = trendData.some((d) => d.amount > 0);
@@ -150,16 +174,17 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
           <div className="text-[10px] uppercase tracking-[0.16em] text-paper-500 font-mono mb-1">overview</div>
           <h1 className="font-display text-2xl font-semibold text-paper-100">Monthly cockpit</h1>
         </div>
-        <MonthSwitcher monthKey={monthKey} onChange={setMonthKey} />
+        <MonthSwitcher monthKey={monthKey} onChange={setMonthKey} resetDay={resetDay} />
       </div>
 
       {/* Cycle banner */}
       <div className="flex items-center gap-2 rounded-xl border border-ink-border bg-ink-850/50 px-3.5 py-2 text-[11px] font-mono text-paper-500">
         <CalendarClock size={12} className="text-signal-blue shrink-0" />
         <span className="min-w-0 truncate">
-          {monthLabel(monthKey)} cycle · resets{' '}
-          <span className="text-paper-100">{formatDateNice(cycleEnd)}</span>
-          {cycleOpen && <> · <span className="text-paper-100">{daysLeft} day(s) left</span></>}
+          {monthLabel(monthKey)} cycle ·{' '}
+          <span className="text-paper-100">{cycleRangeLabel(monthKey, resetDay)}</span> ({cycleDays} days) ·
+          resets <span className="text-paper-100">{formatDateNice(cycleEnd)}</span>
+          {cycleOpen && <> · <span className="text-paper-100">day {elapsed} of {cycleDays}, {daysLeft} left</span></>}
         </span>
         <button onClick={() => goTo('settings')} className="ml-auto text-signal-amber hover:text-amber-300 shrink-0">
           change
@@ -186,7 +211,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
           icon={Flame}
           label="Daily average"
           value={formatINR(dailyAvg)}
-          sub={`across ${daysElapsed} day(s)`}
+          sub={`across ${daysElapsed} day(s) of this cycle`}
           accent="blue"
         />
         <Kpi
@@ -204,9 +229,13 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         />
         <Kpi
           icon={CalendarDays}
-          label={cycleOpen ? 'Projected at reset' : 'Cycle length'}
-          value={cycleOpen ? formatINR(projected) : `${cycleDays} days`}
-          sub={cycleOpen ? (projected > totalBudget && totalBudget > 0 ? 'trending over budget' : 'trending on track') : 'closed cycle'}
+          label={cycleOpen ? 'Projected at reset' : 'Cycle total'}
+          value={cycleOpen ? formatINR(projected) : formatINR(totalSpent)}
+          sub={
+            cycleOpen
+              ? `${formatDateNice(cycleEnd)} · ${projected > totalBudget && totalBudget > 0 ? 'trending over budget' : 'trending on track'}`
+              : `closed · ${cycleDays} day cycle`
+          }
           accent={cycleOpen && projected > totalBudget && totalBudget > 0 ? 'red' : 'violet'}
         />
       </div>
@@ -228,7 +257,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
           }
         >
           {pieData.length === 0 ? (
-            <EmptyChart label={splitFilter.length > 0 ? 'No spends in the selected categories' : 'No spends logged yet this month'} />
+            <EmptyChart label={splitFilter.length > 0 ? 'No spends in the selected categories' : 'No spends logged yet this cycle'} />
           ) : (
             <div className="flex items-center gap-2">
               <div className="w-[130px] h-[130px] shrink-0 relative">
@@ -272,12 +301,12 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         </Panel>
 
         {/* Daily trend */}
-        <Panel title="Daily rhythm" eyebrow={`${daysTotal}-day trend`} className="lg:col-span-3">
+        <Panel title="Daily rhythm" eyebrow={`${cycleRangeLabel(monthKey, resetDay)} · ${cycleDays} days`} className="lg:col-span-3">
           {monthTx.length === 0 ? (
             <EmptyChart label="Log a spend to see your daily trend" />
           ) : (
             <ResponsiveContainer width="100%" height={168}>
-              <BarChart data={dailySeriesOf(monthTx, daysTotal)} barCategoryGap={2}>
+              <BarChart data={dailySeries} barCategoryGap={2}>
                 <CartesianGrid strokeDasharray="3 6" stroke={chartColors.grid} vertical={false} />
                 <XAxis dataKey="day" tick={{ fill: chartColors.axis, fontSize: 10 }} axisLine={{ stroke: chartColors.tooltipBorder }} tickLine={false} interval={2} />
                 <YAxis tick={{ fill: chartColors.axis, fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCompactINR(v)} width={44} />
@@ -285,7 +314,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
                   cursor={{ fill: chartColors.cursor }}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 10, fontSize: 12 }}
                   formatter={(v) => formatINR(v)}
-                  labelFormatter={(d) => `Day ${d}`}
+                  labelFormatter={(_d, payload) => (payload?.[0] ? formatDateNice(payload[0].payload.date) : '')}
                 />
                 <Bar dataKey="amount" radius={[3, 3, 0, 0]} fill="#F2A93B" />
               </BarChart>
@@ -297,8 +326,8 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
       <div className="grid lg:grid-cols-5 gap-5">
         {/* Month-to-month spending */}
         <Panel
-          title="Month on month"
-          eyebrow={`last ${TREND_MONTHS} months`}
+          title="Cycle on cycle"
+          eyebrow={`last ${TREND_MONTHS} cycles`}
           className="lg:col-span-3"
           action={
             <MultiSelect
@@ -337,42 +366,53 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
                 </BarChart>
               </ResponsiveContainer>
               <div className="flex items-center justify-between text-[10px] font-mono text-paper-500 mt-2 pt-2 border-t border-ink-border">
-                <span>{TREND_MONTHS}-month average {formatINR(trendAvg)}</span>
-                <span className="hidden sm:inline">tap a bar to jump to that month</span>
+                <span>{TREND_MONTHS}-cycle average {formatINR(trendAvg)}</span>
+                <span className="hidden sm:inline">tap a bar to jump to that cycle</span>
               </div>
             </>
           )}
         </Panel>
 
         {/* Versus last month */}
-        <Panel title="Versus last month" eyebrow={monthShortLabel(prevMonthKey)} className="lg:col-span-2">
+        <Panel
+          title="Versus last cycle"
+          eyebrow={partialCycle ? `same ${elapsed} day(s) of ${monthShortLabel(prevMonthKey)}` : monthShortLabel(prevMonthKey)}
+          className="lg:col-span-2"
+        >
           {prevTotal === 0 && totalSpent === 0 ? (
             <EmptyChart label="No spend to compare yet" />
           ) : (
             <div className="space-y-3">
-              <DeltaHeadline delta={momDelta} pctVal={momPct} prevTotal={prevTotal} />
+              <DeltaHeadline
+                delta={momDelta}
+                pctVal={momPct}
+                baseline={momBaseline}
+                partial={partialCycle}
+                days={elapsed}
+              />
 
-              {partialMonth && (
+              {partialCycle && (
                 <div className="rounded-xl border border-ink-border bg-ink-850/60 px-3 py-2.5">
                   <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono mb-1">
-                    like-for-like · first {daysElapsed} day(s)
+                    matched to {formatDateNice(prevSameSpanDate)} last cycle
                   </div>
                   <div className="flex items-baseline gap-2 flex-wrap">
-                    <span className={`font-mono text-sm font-semibold ${paceDelta > 0 ? 'text-signal-red' : paceDelta < 0 ? 'text-signal-green' : 'text-paper-300'}`}>
-                      {paceDelta > 0 ? '+' : paceDelta < 0 ? '−' : ''}{formatINR(Math.abs(paceDelta))}
+                    <span className="font-mono text-sm text-paper-300">
+                      {formatINR(totalSpent)} <span className="text-paper-600">vs</span> {formatINR(prevSameSpan)}
                     </span>
-                    {pacePct !== null && (
-                      <span className="text-[11px] font-mono text-paper-500">
-                        {pacePct > 0 ? '+' : ''}{pacePct.toFixed(0)}% vs {formatCompactINR(prevSameSpan)}
-                      </span>
-                    )}
+                  </div>
+                  <div className="text-[10px] font-mono text-paper-500 mt-1.5 pt-1.5 border-t border-ink-border">
+                    that whole cycle finished at {formatCompactINR(prevTotal)}
+                    {fullPct !== null && <> · you are at {formatCompactINR(totalSpent)} so far</>}
                   </div>
                 </div>
               )}
 
               {movers.length > 0 && (
                 <div>
-                  <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono mb-1.5">biggest movers</div>
+                  <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono mb-1.5">
+                    biggest movers{partialCycle ? ' · like-for-like' : ''}
+                  </div>
                   <div className="space-y-1.5">
                     {movers.slice(0, 4).map((m) => (
                       <div key={m.id} className="flex items-center gap-2 text-xs">
@@ -469,7 +509,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
               <div className="flex items-start gap-2.5">
                 <Sparkles size={15} className="text-signal-amber mt-0.5 shrink-0" />
                 <p className="text-xs text-paper-300 leading-relaxed">
-                  <span className="text-paper-100 font-medium">{topCategory.name}</span> is your top spend this month at{' '}
+                  <span className="text-paper-100 font-medium">{topCategory.name}</span> is your top spend this cycle at{' '}
                   <span className="font-mono text-paper-100">{formatINR(topCategory.spent)}</span>
                   {topCategory.budget > 0 && topCategory.spent > topCategory.budget && (
                     <> — <span className="text-signal-red">{formatINR(topCategory.spent - topCategory.budget)} over</span> its allocation.</>
@@ -484,15 +524,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   );
 }
 
-function dailySeriesOf(monthTx, daysTotal) {
-  const grouped = groupBy(monthTx, (t) => dayOfMonth(t.date));
-  return Array.from({ length: daysTotal }, (_, i) => {
-    const d = i + 1;
-    return { day: d, amount: sum(grouped[d] || [], (t) => t.amount) };
-  });
-}
-
-function DeltaHeadline({ delta, pctVal, prevTotal }) {
+function DeltaHeadline({ delta, pctVal, baseline, partial, days }) {
   const up = delta > 0;
   const flat = delta === 0;
   const Icon = flat ? Minus : up ? TrendingUp : TrendingDown;
@@ -508,10 +540,10 @@ function DeltaHeadline({ delta, pctVal, prevTotal }) {
         </div>
         <div className="text-[11px] text-paper-500 font-mono mt-0.5">
           {pctVal === null
-            ? 'nothing spent last month to compare'
+            ? `nothing spent in ${partial ? `the first ${days} day(s) of ` : ''}the last cycle`
             : flat
-              ? `same as ${formatCompactINR(prevTotal)} last month`
-              : `${pctVal > 0 ? '+' : ''}${pctVal.toFixed(0)}% ${up ? 'more' : 'less'} than ${formatCompactINR(prevTotal)}`}
+              ? `same as ${formatCompactINR(baseline)}${partial ? ` by day ${days}` : ''} last cycle`
+              : `${pctVal > 0 ? '+' : ''}${pctVal.toFixed(0)}% ${up ? 'more' : 'less'} than ${formatCompactINR(baseline)}${partial ? ` by day ${days}` : ''}`}
         </div>
       </div>
     </div>

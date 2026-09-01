@@ -5,7 +5,7 @@ import { Download, Trash2, ShieldCheck, Wallet2, LogOut, UserCircle, RotateCcw, 
 import Panel from '@/components/ui/Panel';
 import {
   formatINR, getCategory, clampCycleResetDay, cycleEndDate, daysLeftInCycle,
-  formatDateNice, currentMonthKey, DEFAULT_CYCLE_RESET_DAY,
+  formatDateNice, currentCycleKey, cycleRangeLabel, DEFAULT_CYCLE_RESET_DAY,
 } from '@/lib/utils';
 import { useToast } from '@/components/ui/Toast';
 
@@ -142,9 +142,10 @@ export default function SettingsView({ store, goTo }) {
 
       <Panel title="Transaction reset day" eyebrow="when the spend cycle rolls over">
         <p className="text-xs text-paper-300 leading-relaxed mb-3">
-          Your cycle does not end on the last day of the month — it runs until this day of the{' '}
-          <span className="text-paper-100">following</span> month. Remaining days, and the
-          &ldquo;left per day&rdquo; figure on your overview, are counted from today up to that date.
+          This is the day your ledger rolls over. A cycle starts on this day and runs until the same
+          day of the next month — so it is <span className="text-paper-100">not</span> a calendar
+          month. Every figure in the app follows it: total spent, remaining balance, daily average,
+          avg left/day, projected at reset, and the comparison against the last cycle.
         </p>
         <div className="flex items-center gap-2">
           <div className="flex-1 flex items-center gap-2 rounded-xl border border-ink-border bg-ink-850 px-3 py-2.5">
@@ -156,7 +157,7 @@ export default function SettingsView({ store, goTo }) {
             >
               {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
                 <option key={d} value={d}>
-                  {ordinal(d)} of next month
+                  {ordinal(d)} of the month
                 </option>
               ))}
             </select>
@@ -172,11 +173,15 @@ export default function SettingsView({ store, goTo }) {
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-ink-border bg-ink-850/60 px-3 py-2.5">
           <CalendarClock size={14} className="text-signal-blue mt-0.5 shrink-0" />
           <p className="text-[11px] font-mono text-paper-500 leading-relaxed">
-            This cycle closes on{' '}
+            With this setting the current cycle runs{' '}
             <span className="text-paper-100">
-              {formatDateNice(cycleEndDate(currentMonthKey(), clampCycleResetDay(resetDay)))}
+              {cycleRangeLabel(currentCycleKey(clampCycleResetDay(resetDay)), clampCycleResetDay(resetDay))}
             </span>{' '}
-            — {daysLeftInCycle(currentMonthKey(), clampCycleResetDay(resetDay))} day(s) from today.
+            and resets on{' '}
+            <span className="text-paper-100">
+              {formatDateNice(cycleEndDate(currentCycleKey(clampCycleResetDay(resetDay)), clampCycleResetDay(resetDay)))}
+            </span>{' '}
+            — {daysLeftInCycle(currentCycleKey(clampCycleResetDay(resetDay)), clampCycleResetDay(resetDay))} day(s) from today.
           </p>
         </div>
       </Panel>
