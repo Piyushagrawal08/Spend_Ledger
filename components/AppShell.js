@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, Archive, Settings as SettingsIcon, Gauge as GaugeIcon } from 'lucide-react';
 import { useFinanceStore } from '@/lib/useFinanceStore';
-import { currentMonthKey } from '@/lib/utils';
+import { currentCycleKey, DEFAULT_CYCLE_RESET_DAY } from '@/lib/utils';
 import { ToastProvider } from '@/components/ui/Toast';
 import ThemeToggle from '@/components/ui/ThemeToggle';
 
@@ -27,8 +27,13 @@ const NAV_ITEMS = [
 
 function AppInner() {
   const [tab, setTab] = useState('add');
-  const [monthKey, setMonthKey] = useState(currentMonthKey());
+  // Null until the user picks a cycle, so the default follows the reset day
+  // once settings arrive rather than sticking on the calendar month.
+  const [pickedKey, setPickedKey] = useState(null);
   const store = useFinanceStore();
+  const resetDay = store.settings?.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY;
+  const monthKey = pickedKey ?? currentCycleKey(resetDay);
+  const setMonthKey = setPickedKey;
 
   if (!store.hydrated) {
     return (

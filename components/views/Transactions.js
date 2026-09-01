@@ -7,22 +7,25 @@ import Modal from '@/components/ui/Modal';
 import MonthSwitcher from '@/components/ui/MonthSwitcher';
 import { CategoryIcon } from '@/lib/icons';
 import { PAYMENT_METHODS } from '@/lib/defaultData';
-import { formatINR, formatDateNice, groupBy, sum, classNames, getCategory } from '@/lib/utils';
+import {
+  formatINR, formatDateNice, groupBy, sum, classNames, getCategory,
+  filterCycle, cycleRangeLabel, DEFAULT_CYCLE_RESET_DAY,
+} from '@/lib/utils';
 import { useToast } from '@/components/ui/Toast';
 
 export default function Transactions({ store, monthKey, setMonthKey }) {
-  const { transactions, categories, deleteTransaction, updateTransaction } = store;
+  const { transactions, categories, deleteTransaction, updateTransaction, settings } = store;
+  const resetDay = settings?.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY;
   const toast = useToast();
   const [query, setQuery] = useState('');
   const [catFilter, setCatFilter] = useState('all');
   const [editing, setEditing] = useState(null);
 
   const filtered = useMemo(() => {
-    return transactions
-      .filter((t) => t.date.startsWith(monthKey))
+    return filterCycle(transactions, monthKey, resetDay)
       .filter((t) => catFilter === 'all' || t.categoryId === catFilter)
       .filter((t) => !query || (t.note || '').toLowerCase().includes(query.toLowerCase()));
-  }, [transactions, monthKey, catFilter, query]);
+  }, [transactions, monthKey, resetDay, catFilter, query]);
 
   const grouped = useMemo(() => {
     const g = groupBy(filtered, (t) => t.date);
@@ -37,8 +40,9 @@ export default function Transactions({ store, monthKey, setMonthKey }) {
         <div>
           <div className="text-[10px] uppercase tracking-[0.16em] text-paper-500 font-mono mb-1">ledger</div>
           <h1 className="font-display text-2xl font-semibold text-paper-100">Transactions</h1>
+          <p className="text-[11px] font-mono text-paper-500 mt-1">cycle {cycleRangeLabel(monthKey, resetDay)}</p>
         </div>
-        <MonthSwitcher monthKey={monthKey} onChange={setMonthKey} />
+        <MonthSwitcher monthKey={monthKey} onChange={setMonthKey} resetDay={resetDay} />
       </div>
 
       <Panel noPad>
