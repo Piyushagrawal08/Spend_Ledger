@@ -2,8 +2,11 @@
 -- Run this once in your Supabase project's SQL editor (Dashboard -> SQL Editor -> New query -> paste -> Run).
 -- Safe to re-run: uses IF NOT EXISTS / OR REPLACE / DROP IF EXISTS guards.
 --
--- ALREADY SET UP? Run supabase/migrations/001_cycle_reset_and_snapshots.sql
--- instead. It adds only what is new and contains no DROP at all, so it cannot
+-- ALREADY SET UP? Run the files in supabase/migrations/ instead — in order:
+--   001_cycle_reset_and_snapshots.sql   cycle reset day + ledger snapshots
+--   002_credit_entries.sql              credits alongside debits
+--   003_credit_sources.sql              editable credit sources
+-- Each adds only what is new and contains no DROP at all, so neither can
 -- touch your existing rows, policies or triggers.
 --
 -- Note on Supabase's "destructive operations" warning for this file: the only
@@ -25,6 +28,29 @@ create table if not exists public.categories (
   created_at timestamptz not null default now()
 );
 
+-- One table holds both sides of the ledger. `amount` is always POSITIVE;
+-- the direction lives in `kind`, never in the sign, so no aggregate can be
+-- accidentally right for one side and wrong for the other.
+--
+--   kind = 'debit'   money out. `category_id` says where it went.
+--   kind = 'credit'  money in.  `source` says where it came from, and an
+--                    optional `category_id` means the credit gives spend
+--                    BACK to that category (a refund or reimbursement)
+--                    rather than being fresh income.
+-- Credits get their own taxonomy, the mirror of categories: categories say
+-- where money went, credit sources say where it came from. No budget field —
+-- you do not budget for money coming in. `offsets_spend` is the UI default for
+-- whether this source normally hands money back to a spend category.
+create table if not exists public.credit_sources (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  color text not null default '#3DDC97',
+  icon text not null default 'Banknote',
+  offsets_spend boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.transactions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -33,8 +59,32 @@ create table if not exists public.transactions (
   date date not null,
   note text default '',
   method text default 'UPI',
+  kind text not null default 'debit' check (kind in ('debit', 'credit')),
+  source text,                           -- credits only: the label as written
+  source_id uuid references public.credit_sources(id) on delete set null,
   created_at timestamptz not null default now()
 );
+
+-- Migration for projects created before credits existed. Every pre-existing
+-- row is read as exactly what it always was: a debit.
+alter table public.transactions
+  add column if not exists kind text not null default 'debit';
+alter table public.transactions
+  add column if not exists source text;
+alter table public.transactions
+  add column if not exists source_id uuid references public.credit_sources(id) on delete set null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'transactions_kind_check'
+      and conrelid = 'public.transactions'::regclass
+  ) then
+    alter table public.transactions
+      add constraint transactions_kind_check check (kind in ('debit', 'credit'));
+  end if;
+end $$;
 
 create table if not exists public.budgets (
   id uuid primary key default gen_random_uuid(),
@@ -78,12 +128,16 @@ begin
 end $$;
 
 create index if not exists idx_transactions_user_date on public.transactions (user_id, date desc);
+create index if not exists idx_transactions_user_kind_date on public.transactions (user_id, kind, date desc);
+create index if not exists idx_transactions_source on public.transactions (source_id);
+create index if not exists idx_credit_sources_user on public.credit_sources (user_id);
 create index if not exists idx_categories_user on public.categories (user_id);
 create index if not exists idx_budgets_user_month on public.budgets (user_id, month_key);
 
 -- ── Row Level Security: every user can only ever see/touch their own rows ─
 
 alter table public.categories enable row level security;
+alter table public.credit_sources enable row level security;
 alter table public.transactions enable row level security;
 alter table public.budgets enable row level security;
 alter table public.monthly_totals enable row level security;
@@ -91,6 +145,10 @@ alter table public.user_settings enable row level security;
 
 drop policy if exists categories_owner on public.categories;
 create policy categories_owner on public.categories
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists credit_sources_owner on public.credit_sources;
+create policy credit_sources_owner on public.credit_sources
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 drop policy if exists transactions_owner on public.transactions;
@@ -135,6 +193,17 @@ begin
     (new.id, 'Learning & Exams',       '#E7C24F', 'BookOpen',        2000),
     (new.id, 'Investments & Savings',  '#38BDF8', 'PiggyBank',       8000),
     (new.id, 'Others',                 '#8A93A6', 'MoreHorizontal',  1500);
+
+  insert into public.credit_sources (user_id, name, color, icon, offsets_spend) values
+    (new.id, 'Salary',        '#3DDC97', 'Banknote',       false),
+    (new.id, 'Refund',        '#4FD1E7', 'RotateCcw',      true ),
+    (new.id, 'Reimbursement', '#5B9DF2', 'Receipt',        true ),
+    (new.id, 'Cashback',      '#F2A93B', 'CreditCard',     true ),
+    (new.id, 'Transfer in',   '#9B8CF2', 'Landmark',       false),
+    (new.id, 'Interest',      '#38BDF8', 'TrendingUp',     false),
+    (new.id, 'Investments',   '#7EDB6F', 'PiggyBank',      false),
+    (new.id, 'Gift',          '#F27CA3', 'Gift',           false),
+    (new.id, 'Other',         '#8A93A6', 'MoreHorizontal', false);
 
   return new;
 end;

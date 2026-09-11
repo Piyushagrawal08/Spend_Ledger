@@ -3,16 +3,18 @@
 import { useMemo, useState } from 'react';
 import {
   Archive, ArchiveRestore, Download, Trash2, Eye, ArrowLeft, Lock,
-  ShieldCheck, Camera, Terminal, HardDriveDownload, Inbox,
+  ShieldCheck, Camera, Terminal, HardDriveDownload, Inbox, Undo2,
 } from 'lucide-react';
 import Panel from '@/components/ui/Panel';
 import { CategoryIcon } from '@/lib/icons';
 import { useToast } from '@/components/ui/Toast';
 import {
   formatINR, formatCompactINR, formatDateNice, sum, groupBy, classNames,
+  ledgerTotals, netSpendByCategory, isCredit, signedAmount, getCreditSource,
 } from '@/lib/utils';
 
 const UNCAT = { id: '__uncategorized__', name: 'Uncategorized', color: '#8A93A6', icon: 'MoreHorizontal' };
+
 
 export default function Backups({ store }) {
   const { snapshots, createSnapshot, getSnapshot, deleteSnapshot, transactions } = store;
@@ -148,7 +150,7 @@ export default function Backups({ store }) {
                   </div>
                   <div className="text-[11px] font-mono text-paper-500 mt-0.5 truncate">
                     {s.label ? `${formatStamp(s.createdAt)} · ` : ''}
-                    {s.txCount} entries · {formatINR(s.totalAmount)}
+                    {s.txCount} entries · {formatINR(s.totalAmount)} net spend
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -195,14 +197,19 @@ function SnapshotViewer({ snapshot, onBack, onDownload }) {
     [payload.transactions]
   );
   const cats = payload.categories || [];
-  const total = sum(txs, (t) => t.amount);
+  // Sources are read from the snapshot's own frozen copy, so renaming or
+  // deleting one in the live app never changes what an archive shows.
+  const srcs = payload.creditSources || [];
+  // A v1 payload predates credits; every entry in it reads back as a debit,
+  // which is exactly what it was, so these totals stay right for both versions.
+  const flow = useMemo(() => ledgerTotals(txs), [txs]);
 
   const catOf = (id) => cats.find((c) => c.id === id) || UNCAT;
 
   const byCategory = useMemo(() => {
-    const grouped = groupBy(txs, (t) => t.categoryId || UNCAT.id);
-    return Object.entries(grouped)
-      .map(([id, items]) => ({ ...catOf(id === UNCAT.id ? null : id), spent: sum(items, (t) => t.amount) }))
+    const net = netSpendByCategory(txs, UNCAT.id);
+    return Object.entries(net)
+      .map(([id, spent]) => ({ ...catOf(id === UNCAT.id ? null : id), spent }))
       .sort((a, b) => b.spent - a.spent);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txs, cats]);
@@ -248,9 +255,9 @@ function SnapshotViewer({ snapshot, onBack, onDownload }) {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Stat icon={Archive} label="Entries" value={String(txs.length)} accent="blue" />
-        <Stat icon={ArchiveRestore} label="Total spend" value={formatINR(total)} accent="amber" />
-        <Stat icon={Camera} label="Categories" value={String(cats.length)} accent="violet" />
-        <Stat icon={Lock} label="Date range" value={span} accent="green" mono />
+        <Stat icon={ArchiveRestore} label="Net spend" value={formatINR(flow.netSpend)} accent="amber" />
+        <Stat icon={Undo2} label="Money in" value={formatINR(flow.credits)} accent="green" />
+        <Stat icon={Lock} label="Date range" value={span} accent="violet" mono />
       </div>
 
       <div className="grid lg:grid-cols-5 gap-5">
@@ -285,21 +292,34 @@ function SnapshotViewer({ snapshot, onBack, onDownload }) {
                 <div key={date} className="px-5 py-3">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[11px] font-mono text-paper-500">{formatDateNice(date)}</span>
-                    <span className="text-[11px] font-mono text-paper-500">{formatINR(sum(items, (t) => t.amount))}</span>
+                    <span className="text-[11px] font-mono text-paper-500">{formatINR(sum(items, signedAmount))}</span>
                   </div>
                   <div className="space-y-2">
                     {items.map((t, i) => {
-                      const cat = catOf(t.categoryId);
+                      const isIn = isCredit(t);
+                      const cat = t.categoryId ? catOf(t.categoryId) : null;
+                      const src = isIn ? getCreditSource(srcs, t) : null;
+                      const icon = isIn ? src.icon : (cat || UNCAT).icon;
+                      const tint = isIn ? src.color : (cat || UNCAT).color;
+                      const meta = isIn
+                        ? [src.name, cat ? `back to ${cat.name}` : 'income', t.method]
+                        : [(cat || UNCAT).name, t.method];
                       return (
                         <div key={t.id || `${date}-${i}`} className="flex items-center gap-2.5 text-sm">
-                          <span className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${cat.color}22` }}>
-                            <CategoryIcon name={cat.icon} size={13} style={{ color: cat.color }} />
+                          <span className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${tint}22` }}>
+                            <CategoryIcon name={icon} size={13} style={{ color: tint }} />
                           </span>
                           <div className="min-w-0 flex-1">
-                            <div className="text-paper-100 truncate text-[13px]">{t.note || cat.name}</div>
-                            <div className="text-paper-500 text-[10px] font-mono">{cat.name} · {t.method || '—'}</div>
+                            <div className="text-paper-100 truncate text-[13px]">
+                              {t.note || (isIn ? src.name : (cat || UNCAT).name)}
+                            </div>
+                            <div className="text-paper-500 text-[10px] font-mono truncate">
+                              {meta.filter(Boolean).join(' · ') || '—'}
+                            </div>
                           </div>
-                          <span className="font-mono text-paper-100 text-[13px]">{formatINR(t.amount)}</span>
+                          <span className={classNames('font-mono text-[13px]', isIn ? 'text-signal-green' : 'text-paper-100')}>
+                            {isIn ? '+' : '−'}{formatINR(t.amount)}
+                          </span>
                         </div>
                       );
                     })}
@@ -363,10 +383,22 @@ function formatStamp(iso) {
 
 function toCSV(payload) {
   const cats = payload.categories || [];
-  const header = ['Date', 'Category', 'Amount', 'Payment Method', 'Note'];
+  const srcs = payload.creditSources || [];
+  // `Signed amount` is what a spreadsheet can sum straight down the column;
+  // `Amount` stays positive so both sides read the way the app shows them.
+  const header = ['Date', 'Type', 'Category', 'Source', 'Amount', 'Signed amount', 'Payment Method', 'Note'];
   const rows = (payload.transactions || []).map((t) => {
-    const cat = cats.find((c) => c.id === t.categoryId) || UNCAT;
-    return [t.date, cat.name, t.amount, t.method || '', (t.note || '').replace(/,/g, ';')];
+    const cat = t.categoryId ? cats.find((c) => c.id === t.categoryId) || UNCAT : null;
+    return [
+      t.date,
+      isCredit(t) ? 'Credit' : 'Debit',
+      cat ? cat.name : '',
+      isCredit(t) ? getCreditSource(srcs, t).name : '',
+      t.amount,
+      signedAmount(t),
+      t.method || '',
+      (t.note || '').replace(/,/g, ';'),
+    ];
   });
   return [header, ...rows].map((r) => r.join(',')).join('\n');
 }

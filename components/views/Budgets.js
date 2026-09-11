@@ -8,8 +8,8 @@ import MonthSwitcher from '@/components/ui/MonthSwitcher';
 import CategoryModal from '@/components/CategoryModal';
 import { CategoryIcon } from '@/lib/icons';
 import {
-  formatINR, groupBy, sum, classNames, filterCycle, cycleRangeLabel,
-  monthShortLabel, monthLabel, DEFAULT_CYCLE_RESET_DAY,
+  formatINR, sum, classNames, filterCycle, cycleRangeLabel, netSpendByCategory,
+  ledgerTotals, monthShortLabel, monthLabel, DEFAULT_CYCLE_RESET_DAY,
 } from '@/lib/utils';
 import { useToast } from '@/components/ui/Toast';
 
@@ -27,12 +27,13 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
     () => filterCycle(transactions, monthKey, resetDay),
     [transactions, monthKey, resetDay]
   );
-  const spentByCategory = useMemo(() => {
-    const g = groupBy(monthTx, (t) => t.categoryId);
-    const map = {};
-    categories.forEach((c) => { map[c.id] = sum(g[c.id] || [], (t) => t.amount); });
-    return map;
-  }, [monthTx, categories]);
+  // Net, not gross: a refund tagged to a category hands that budget back, so
+  // a fully refunded spend leaves the allocation as if it never happened.
+  const spentByCategory = useMemo(
+    () => netSpendByCategory(monthTx),
+    [monthTx]
+  );
+  const cycleTotals = useMemo(() => ledgerTotals(monthTx), [monthTx]);
 
   const allocated = sum(categories, (c) => budgetFor(monthKey, c.id));
   const totalSpent = sum(categories, (c) => spentByCategory[c.id] || 0);
@@ -178,6 +179,16 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
               {totalSpent > monthlyTotal && monthlyTotal > 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} className="text-signal-green" />}
               {formatINR(totalSpent)}
             </div>
+            {cycleTotals.refunds > 0 && (
+              <div className="text-[10px] font-mono text-signal-green mt-1">
+                after {formatINR(cycleTotals.refunds)} refunded back
+              </div>
+            )}
+            {cycleTotals.income > 0 && (
+              <div className="text-[10px] font-mono text-paper-500 mt-0.5">
+                {formatINR(cycleTotals.income)} income sits outside these budgets
+              </div>
+            )}
           </div>
           <div className="text-right">
             <div className="text-[11px] uppercase tracking-wide text-paper-500 font-mono">Left of cycle budget</div>
@@ -202,7 +213,7 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
           const spent = spentByCategory[c.id] || 0;
           const origin = budgetOriginFor(monthKey, c.id);
           const budget = origin.amount;
-          const pct = budget > 0 ? (spent / budget) * 100 : spent > 0 ? 100 : 0;
+          const pct = budget > 0 ? Math.max((spent / budget) * 100, 0) : spent > 0 ? 100 : 0;
           const dirty = drafts[c.id] !== undefined && Number(drafts[c.id]) !== budget;
           return (
             <Panel key={c.id} noPad>
@@ -214,7 +225,10 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
                     {c.name}
                   </div>
                   <div className="text-[11px] font-mono text-paper-500 mt-0.5">
-                    {formatINR(spent)} spent {budget > 0 && `· ${formatINR(Math.max(budget - spent, 0))} left`}
+                    {spent < 0
+                      ? `${formatINR(-spent)} refunded net`
+                      : `${formatINR(spent)} spent`}
+                    {budget > 0 && ` · ${formatINR(Math.max(budget - spent, 0))} left`}
                   </div>
                   <div className="text-[10px] font-mono mt-0.5 truncate">
                     {origin.origin === 'carried' ? (

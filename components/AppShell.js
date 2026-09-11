@@ -8,7 +8,7 @@ import { ToastProvider } from '@/components/ui/Toast';
 import ThemeToggle from '@/components/ui/ThemeToggle';
 
 import Overview from '@/components/views/Overview';
-import AddExpense from '@/components/views/AddExpense';
+import AddEntry from '@/components/views/AddEntry';
 import Transactions from '@/components/views/Transactions';
 import Budgets from '@/components/views/Budgets';
 import Categories from '@/components/views/Categories';
@@ -17,7 +17,7 @@ import SettingsView from '@/components/views/SettingsView';
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: LayoutGrid },
-  { id: 'add', label: 'Add spend', icon: PlusCircle },
+  { id: 'add', label: 'Add entry', icon: PlusCircle },
   { id: 'transactions', label: 'Ledger', icon: ListChecks },
   { id: 'budgets', label: 'Budgets', icon: PieChart },
   { id: 'categories', label: 'Categories', icon: Tags },
@@ -25,12 +25,11 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
-function AppInner() {
+function AppInner({ store, banner = null }) {
   const [tab, setTab] = useState('add');
   // Null until the user picks a cycle, so the default follows the reset day
   // once settings arrive rather than sticking on the calendar month.
   const [pickedKey, setPickedKey] = useState(null);
-  const store = useFinanceStore();
   const resetDay = store.settings?.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY;
   const monthKey = pickedKey ?? currentCycleKey(resetDay);
   const setMonthKey = setPickedKey;
@@ -107,9 +106,10 @@ function AppInner() {
 
       {/* Main content */}
       <main className="flex-1 min-w-0 pt-16 sm:pt-0 pb-24 sm:pb-0">
+        {banner}
         <div className="max-w-5xl mx-auto px-4 sm:px-8 py-6 sm:py-8">
           {tab === 'overview' && <Overview {...viewProps} />}
-          {tab === 'add' && <AddExpense {...viewProps} />}
+          {tab === 'add' && <AddEntry {...viewProps} />}
           {tab === 'transactions' && <Transactions {...viewProps} />}
           {tab === 'budgets' && <Budgets {...viewProps} />}
           {tab === 'categories' && <Categories {...viewProps} />}
@@ -150,10 +150,28 @@ function AppInner() {
   );
 }
 
+/** The live app, wired to Supabase. */
 export default function AppShell() {
   return (
     <ToastProvider>
-      <AppInner />
+      <LiveApp />
+    </ToastProvider>
+  );
+}
+
+function LiveApp() {
+  return <AppInner store={useFinanceStore()} />;
+}
+
+/**
+ * The same shell driven by any store-shaped object. The /demo route uses this
+ * with an in-memory store so a UI change can be reviewed without a login and
+ * without touching real data.
+ */
+export function AppShellWithStore({ store, banner }) {
+  return (
+    <ToastProvider>
+      <AppInner store={store} banner={banner} />
     </ToastProvider>
   );
 }

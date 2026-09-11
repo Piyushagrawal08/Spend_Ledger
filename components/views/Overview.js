@@ -1,10 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import {
   TrendingUp, TrendingDown, Wallet, CalendarDays, Flame, ArrowRight, Sparkles,
-  Coins, Minus, CalendarClock,
+  Coins, Minus, CalendarClock, ArrowDownLeft, SlidersHorizontal, X,
 } from 'lucide-react';
 import Panel from '@/components/ui/Panel';
 import Gauge from '@/components/ui/Gauge';
@@ -14,6 +14,7 @@ import { CategoryIcon } from '@/lib/icons';
 import { useTheme } from '@/lib/ThemeContext';
 import {
   formatINR, formatCompactINR, formatDateNice, sum, groupBy, getCategory,
+  ledgerTotals, netSpend, netSpendByCategory, isCredit, isDebit, isIncome, getCreditSource,
   cycleEndDate, cycleLengthDays, cycleRangeLabel,
   cycleDateAtOffset, elapsedDaysInCycle, daysLeftInCycle, isCycleOpen, filterCycle,
   shiftMonth, lastMonthKeys, monthShortLabel, monthLabel, pctChange,
@@ -24,7 +25,7 @@ const UNCAT_ID = '__uncategorized__';
 const TREND_MONTHS = 6;
 
 export default function Overview({ store, monthKey, setMonthKey, goTo }) {
-  const { transactions, categories, budgetFor, settings } = store;
+  const { transactions, categories, creditSources, budgetFor, settings } = store;
   const { theme } = useTheme();
   const resetDay = settings?.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY;
 
@@ -35,23 +36,53 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   // Category options shared by both filters — "Uncategorized" only when it applies.
   const catOptions = useMemo(() => {
     const opts = categories.map((c) => ({ id: c.id, name: c.name, color: c.color }));
-    if (transactions.some((t) => !t.categoryId)) {
+    if (transactions.some((t) => !t.categoryId && isDebit(t))) {
       opts.push({ id: UNCAT_ID, name: 'Uncategorized', color: '#8A93A6' });
     }
     return opts;
   }, [categories, transactions]);
 
-  const [splitFilter, setSplitFilter] = useState([]);   // "Where it went"
-  const [trendFilter, setTrendFilter] = useState([]);   // "Month on month"
+  // ── The slicer ──────────────────────────────────────────────────────
+  // One category filter for the whole screen. An empty array means "all", so
+  // nothing has to special-case the unfiltered state. Every panel below reads
+  // from the sliced transactions, so selecting a category moves the KPIs, both
+  // charts, the comparison and the budget list together.
+  const [slice, setSlice] = useState([]);
+  const sliced = slice.length > 0;
+
+  // Income is money that belongs to no category, so a category slice cannot
+  // meaningfully include it — it drops out while a slice is active, and the
+  // banner below says so rather than leaving you to wonder.
+  const matchesSlice = useCallback(
+    (t) => {
+      if (!sliced) return true;
+      if (isIncome(t)) return false;
+      return slice.includes(t.categoryId || UNCAT_ID);
+    },
+    [slice, sliced]
+  );
+
+  const slicedCategories = useMemo(
+    () => (sliced ? categories.filter((c) => slice.includes(c.id)) : categories),
+    [categories, slice, sliced]
+  );
 
   // Everything below is scoped to the *cycle*, not the calendar month.
-  const monthTx = useMemo(
+  const cycleTx = useMemo(
     () => filterCycle(transactions, monthKey, resetDay),
     [transactions, monthKey, resetDay]
   );
+  const monthTx = useMemo(() => cycleTx.filter(matchesSlice), [cycleTx, matchesSlice]);
+  /** The unsliced cycle total, so the slice can report its share of spend. */
+  const cycleNetSpend = useMemo(() => netSpend(cycleTx), [cycleTx]);
 
-  const totalSpent = sum(monthTx, (t) => t.amount);
-  const totalBudget = sum(categories, (c) => budgetFor(monthKey, c.id));
+  // Every figure below is NET: debits less the refunds handed back against
+  // them. Income (an untagged credit) never touches spend or budgets — it only
+  // shows up in the money-in and net-flow numbers.
+  const flow = useMemo(() => ledgerTotals(monthTx), [monthTx]);
+  const totalSpent = flow.netSpend;
+  // Budget follows the slice too, so "spent vs allocated" stays a fair pairing.
+  const totalBudget = sum(slicedCategories, (c) => budgetFor(monthKey, c.id));
   const remaining = totalBudget - totalSpent;
 
   // ── Cycle maths ─────────────────────────────────────────────────────
@@ -72,10 +103,10 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   // ── Cycle-over-cycle ────────────────────────────────────────────────
   const prevMonthKey = shiftMonth(monthKey, -1);
   const prevMonthTx = useMemo(
-    () => filterCycle(transactions, prevMonthKey, resetDay),
-    [transactions, prevMonthKey, resetDay]
+    () => filterCycle(transactions, prevMonthKey, resetDay).filter(matchesSlice),
+    [transactions, prevMonthKey, resetDay, matchesSlice]
   );
-  const prevTotal = sum(prevMonthTx, (t) => t.amount);
+  const prevTotal = netSpend(prevMonthTx);
   const fullDelta = totalSpent - prevTotal;
   const fullPct = pctChange(totalSpent, prevTotal);
 
@@ -85,7 +116,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   // each cycle's own start date, not by day-of-month.
   const prevSameSpan = useMemo(() => {
     const cutoff = cycleDateAtOffset(prevMonthKey, resetDay, elapsed); // exclusive
-    return sum(prevMonthTx.filter((t) => t.date < cutoff), (t) => t.amount);
+    return netSpend(prevMonthTx.filter((t) => t.date < cutoff));
   }, [prevMonthTx, prevMonthKey, resetDay, elapsed]);
   const prevSameSpanDate = cycleDateAtOffset(prevMonthKey, resetDay, Math.max(elapsed - 1, 0));
   const paceDelta = totalSpent - prevSameSpan;
@@ -102,64 +133,71 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
     // Movers follow the same like-for-like rule as the headline.
     const cutoff = cycleDateAtOffset(prevMonthKey, resetDay, elapsed);
     const baseline = partialCycle ? prevMonthTx.filter((t) => t.date < cutoff) : prevMonthTx;
-    const now = groupBy(monthTx, (t) => t.categoryId || UNCAT_ID);
-    const before = groupBy(baseline, (t) => t.categoryId || UNCAT_ID);
+    const now = netSpendByCategory(monthTx, UNCAT_ID);
+    const before = netSpendByCategory(baseline, UNCAT_ID);
     const ids = new Set([...Object.keys(now), ...Object.keys(before)]);
     return [...ids]
       .map((id) => {
         const cat = id === UNCAT_ID
           ? { id: UNCAT_ID, name: 'Uncategorized', color: '#8A93A6', icon: 'MoreHorizontal' }
           : getCategory(categories, id);
-        const current = sum(now[id] || [], (t) => t.amount);
-        const previous = sum(before[id] || [], (t) => t.amount);
+        const current = now[id] || 0;
+        const previous = before[id] || 0;
         return { ...cat, id, current, previous, delta: current - previous };
       })
       .filter((m) => m.delta !== 0)
       .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
   }, [monthTx, prevMonthTx, prevMonthKey, resetDay, elapsed, partialCycle, categories]);
 
-  // ── "Where it went" (multi-select filtered) ─────────────────────────
+  // ── Where it went ───────────────────────────────────────────────────
   const byCategory = useMemo(() => {
-    const grouped = groupBy(monthTx, (t) => t.categoryId || UNCAT_ID);
-    const rows = categories.map((c) => ({
+    const net = netSpendByCategory(monthTx, UNCAT_ID);
+    const rows = slicedCategories.map((c) => ({
       ...c,
-      spent: sum(grouped[c.id] || [], (t) => t.amount),
+      spent: net[c.id] || 0,
       budget: budgetFor(monthKey, c.id),
     }));
-    const uncat = sum(grouped[UNCAT_ID] || [], (t) => t.amount);
-    if (uncat > 0) {
+    const uncat = net[UNCAT_ID] || 0;
+    if (uncat > 0 && (!sliced || slice.includes(UNCAT_ID))) {
       rows.push({ id: UNCAT_ID, name: 'Uncategorized', color: '#8A93A6', icon: 'MoreHorizontal', spent: uncat, budget: 0 });
     }
     return rows
       .filter((c) => c.spent > 0 || c.budget > 0)
       .sort((a, b) => b.spent - a.spent);
-  }, [monthTx, categories, budgetFor, monthKey]);
+  }, [monthTx, slicedCategories, sliced, slice, budgetFor, monthKey]);
 
-  const splitRows = useMemo(
-    () => byCategory.filter((c) => splitFilter.length === 0 || splitFilter.includes(c.id)),
-    [byCategory, splitFilter]
-  );
-  const pieData = splitRows.filter((c) => c.spent > 0).map((c) => ({ name: c.name, value: c.spent, color: c.color }));
+  const pieData = byCategory.filter((c) => c.spent > 0).map((c) => ({ name: c.name, value: c.spent, color: c.color }));
   const pieTotal = sum(pieData, (d) => d.value);
 
-  // ── Month-to-month trend (multi-select filtered) ────────────────────
-  const trendData = useMemo(() => {
-    const matches = (t) => trendFilter.length === 0 || trendFilter.includes(t.categoryId || UNCAT_ID);
-    return lastMonthKeys(monthKey, TREND_MONTHS).map((mk) => ({
-      monthKey: mk,
-      label: monthShortLabel(mk),
-      amount: sum(filterCycle(transactions, mk, resetDay).filter(matches), (t) => t.amount),
-    }));
-  }, [transactions, monthKey, trendFilter, resetDay]);
+  // ── Cycle-to-cycle trend ────────────────────────────────────────────
+  const trendData = useMemo(
+    () =>
+      lastMonthKeys(monthKey, TREND_MONTHS).map((mk) => ({
+        monthKey: mk,
+        label: monthShortLabel(mk),
+        amount: netSpend(filterCycle(transactions, mk, resetDay).filter(matchesSlice)),
+      })),
+    [transactions, monthKey, resetDay, matchesSlice]
+  );
 
   // One bar per day of the cycle, labelled by its real calendar date.
+  // Two bars a day: what went out, and what came back in. Charting the net
+  // alone would hide a day that saw a big spend and a big refund both.
   const dailySeries = useMemo(() => {
     const grouped = groupBy(monthTx, (t) => t.date);
     return Array.from({ length: cycleDays }, (_, i) => {
       const date = cycleDateAtOffset(monthKey, resetDay, i);
-      return { day: Number(date.slice(8, 10)), date, amount: sum(grouped[date] || [], (t) => t.amount) };
+      const items = grouped[date] || [];
+      return {
+        day: Number(date.slice(8, 10)),
+        date,
+        amount: sum(items.filter(isDebit), (t) => t.amount),
+        credit: sum(items.filter(isCredit), (t) => t.amount),
+      };
     });
   }, [monthTx, monthKey, resetDay, cycleDays]);
+
+  const hasCredits = flow.credits > 0;
 
   const trendAvg = trendData.length ? sum(trendData, (d) => d.amount) / trendData.length : 0;
   const trendHasData = trendData.some((d) => d.amount > 0);
@@ -191,14 +229,104 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         </button>
       </div>
 
+      {/* The slicer. One control, every panel below. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-ink-border bg-ink-850/50 px-3.5 py-2.5">
+        <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.16em] text-paper-500 font-mono shrink-0">
+          <SlidersHorizontal size={12} className={sliced ? 'text-signal-amber' : ''} />
+          filter
+        </span>
+
+        <MultiSelect
+          options={catOptions}
+          selected={slice}
+          onChange={setSlice}
+          label="Categories"
+          allLabel="All categories"
+          align="left"
+        />
+
+        {/* Selected categories as removable chips, so what is on is legible
+            without opening the dropdown. */}
+        {slice.map((id) => {
+          const opt = catOptions.find((o) => o.id === id);
+          if (!opt) return null;
+          return (
+            <button
+              key={id}
+              onClick={() => setSlice(slice.filter((x) => x !== id))}
+              className="flex items-center gap-1.5 rounded-lg border border-ink-border bg-ink-800 pl-2 pr-1.5 py-1 text-[11px] text-paper-300 hover:text-paper-100 transition-colors"
+            >
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: opt.color }} />
+              <span className="max-w-[120px] truncate">{opt.name}</span>
+              <X size={11} className="text-paper-500" />
+            </button>
+          );
+        })}
+
+        {sliced ? (
+          <>
+            <button
+              onClick={() => setSlice([])}
+              className="text-[11px] font-mono text-signal-amber hover:text-amber-300"
+            >
+              clear
+            </button>
+            <span className="ml-auto text-[11px] font-mono text-paper-500 min-w-0 truncate">
+              {cycleNetSpend > 0 && (
+                <>{Math.round((totalSpent / cycleNetSpend) * 100)}% of cycle spend · </>
+              )}
+              income excluded
+            </span>
+          </>
+        ) : (
+          <span className="ml-auto text-[11px] font-mono text-paper-600 hidden sm:inline">
+            slices every panel on this screen
+          </span>
+        )}
+      </div>
+
+      {/* Two-sided summary — only worth the row once credits actually exist. */}
+      {hasCredits && (
+        <div className="grid grid-cols-3 gap-3 rounded-xl border border-ink-border bg-ink-850/50 px-4 py-3">
+          <FlowCell label="Money out" value={formatINR(flow.debits)} tone="text-paper-100" />
+          <FlowCell label="Money in" value={formatINR(flow.credits)} tone="text-signal-green" />
+          <FlowCell
+            label="Net flow"
+            value={`${flow.netFlow >= 0 ? '+' : '−'}${formatINR(Math.abs(flow.netFlow))}`}
+            tone={flow.netFlow >= 0 ? 'text-signal-green' : 'text-signal-red'}
+          />
+        </div>
+      )}
+
       {/* KPI row */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         <Kpi
           icon={Wallet}
-          label="Total spent"
+          label={flow.refunds > 0 ? 'Net spent' : 'Total spent'}
           value={formatINR(totalSpent)}
-          sub={totalBudget > 0 ? `of ${formatINR(totalBudget)} allocated` : 'no budget set'}
+          sub={
+            flow.refunds > 0
+              ? `${formatINR(flow.debits)} out less ${formatCompactINR(flow.refunds)} refunded`
+              : totalBudget > 0
+                ? `of ${formatINR(totalBudget)} allocated`
+                : 'no budget set'
+          }
           accent={pct > 100 ? 'red' : 'amber'}
+        />
+        <Kpi
+          icon={ArrowDownLeft}
+          label="Money in"
+          value={formatINR(flow.credits)}
+          sub={
+            flow.credits === 0
+              ? 'nothing credited this cycle'
+              : flow.refunds > 0 && flow.income > 0
+                ? `${formatCompactINR(flow.income)} income · ${formatCompactINR(flow.refunds)} refunds`
+                : flow.refunds > 0
+                  ? 'all of it refunds to categories'
+                  : 'income, outside the budgets'
+          }
+          accent="green"
         />
         <Kpi
           icon={TrendingUp}
@@ -244,20 +372,11 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         {/* Category breakdown */}
         <Panel
           title="Where it went"
-          eyebrow={splitFilter.length > 0 ? `${splitFilter.length} of ${byCategory.length} categories` : 'category split'}
+          eyebrow={sliced ? `${byCategory.length} of ${categories.length} categories` : 'category split'}
           className="lg:col-span-2"
-          action={
-            <MultiSelect
-              options={catOptions}
-              selected={splitFilter}
-              onChange={setSplitFilter}
-              label="Categories"
-              allLabel="All categories"
-            />
-          }
         >
           {pieData.length === 0 ? (
-            <EmptyChart label={splitFilter.length > 0 ? 'No spends in the selected categories' : 'No spends logged yet this cycle'} />
+            <EmptyChart label={sliced ? 'No spends in the selected categories' : 'No spends logged yet this cycle'} />
           ) : (
             <div className="flex items-center gap-2">
               <div className="w-[130px] h-[130px] shrink-0 relative">
@@ -277,9 +396,9 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
                 </ResponsiveContainer>
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                   <span className="font-mono text-[13px] text-paper-100 font-semibold">{formatCompactINR(pieTotal)}</span>
-                  {splitFilter.length > 0 && totalSpent > 0 && (
+                  {sliced && cycleNetSpend > 0 && (
                     <span className="font-mono text-[9px] text-paper-500 mt-0.5">
-                      {Math.round((pieTotal / totalSpent) * 100)}% of spend
+                      {Math.round((pieTotal / cycleNetSpend) * 100)}% of spend
                     </span>
                   )}
                 </div>
@@ -301,7 +420,23 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         </Panel>
 
         {/* Daily trend */}
-        <Panel title="Daily rhythm" eyebrow={`${cycleRangeLabel(monthKey, resetDay)} · ${cycleDays} days`} className="lg:col-span-3">
+        <Panel
+          title="Daily rhythm"
+          eyebrow={`${cycleRangeLabel(monthKey, resetDay)} · ${cycleDays} days`}
+          className="lg:col-span-3"
+          action={
+            hasCredits ? (
+              <div className="flex items-center gap-3 text-[10px] font-mono text-paper-500">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-sm" style={{ background: '#F2A93B' }} /> out
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-sm" style={{ background: '#3DDC97' }} /> in
+                </span>
+              </div>
+            ) : null
+          }
+        >
           {monthTx.length === 0 ? (
             <EmptyChart label="Log a spend to see your daily trend" />
           ) : (
@@ -316,7 +451,8 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
                   formatter={(v) => formatINR(v)}
                   labelFormatter={(_d, payload) => (payload?.[0] ? formatDateNice(payload[0].payload.date) : '')}
                 />
-                <Bar dataKey="amount" radius={[3, 3, 0, 0]} fill="#F2A93B" />
+                <Bar dataKey="amount" name="Out" radius={[3, 3, 0, 0]} fill="#F2A93B" />
+                {hasCredits && <Bar dataKey="credit" name="In" radius={[3, 3, 0, 0]} fill="#3DDC97" />}
               </BarChart>
             </ResponsiveContainer>
           )}
@@ -329,18 +465,9 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
           title="Cycle on cycle"
           eyebrow={`last ${TREND_MONTHS} cycles`}
           className="lg:col-span-3"
-          action={
-            <MultiSelect
-              options={catOptions}
-              selected={trendFilter}
-              onChange={setTrendFilter}
-              label="Categories"
-              allLabel="All categories"
-            />
-          }
         >
           {!trendHasData ? (
-            <EmptyChart label={trendFilter.length > 0 ? 'Nothing spent in these categories yet' : 'Not enough history yet'} />
+            <EmptyChart label={sliced ? 'Nothing spent in these categories yet' : 'Not enough history yet'} />
           ) : (
             <>
               <ResponsiveContainer width="100%" height={172}>
@@ -437,7 +564,7 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         {/* Budget gauges */}
         <Panel
           title="Budget status"
-          eyebrow="allocation vs actual"
+          eyebrow={sliced ? 'allocation vs actual · sliced' : 'allocation vs actual'}
           className="lg:col-span-3"
           action={
             <button onClick={() => goTo('budgets')} className="text-[11px] text-signal-amber hover:text-amber-300 flex items-center gap-1 font-mono">
@@ -486,17 +613,23 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
             ) : (
               <div className="space-y-2">
                 {recent.map((t) => {
-                  const cat = getCategory(categories, t.categoryId);
+                  const isIn = isCredit(t);
+                  const cat = t.categoryId ? getCategory(categories, t.categoryId) : null;
+                  const src = isIn ? getCreditSource(creditSources, t) : null;
+                  const icon = isIn ? src.icon : cat?.icon;
+                  const tint = isIn ? src.color : cat?.color;
                   return (
                     <div key={t.id} className="flex items-center gap-2.5 text-xs">
-                      <span className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${cat?.color}22` }}>
-                        <CategoryIcon name={cat?.icon} size={12} style={{ color: cat?.color }} />
+                      <span className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${tint}22` }}>
+                        <CategoryIcon name={icon} size={12} style={{ color: tint }} />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="text-paper-100 truncate">{t.note || cat?.name}</div>
+                        <div className="text-paper-100 truncate">{t.note || (isIn ? src.name : cat?.name)}</div>
                         <div className="text-paper-500 font-mono text-[10px]">{formatDateNice(t.date)}</div>
                       </div>
-                      <span className="font-mono text-paper-100">{formatINR(t.amount)}</span>
+                      <span className={`font-mono ${isIn ? 'text-signal-green' : 'text-paper-100'}`}>
+                        {isIn ? '+' : '−'}{formatINR(t.amount)}
+                      </span>
                     </div>
                   );
                 })}
@@ -546,6 +679,15 @@ function DeltaHeadline({ delta, pctVal, baseline, partial, days }) {
               : `${pctVal > 0 ? '+' : ''}${pctVal.toFixed(0)}% ${up ? 'more' : 'less'} than ${formatCompactINR(baseline)}${partial ? ` by day ${days}` : ''}`}
         </div>
       </div>
+    </div>
+  );
+}
+
+function FlowCell({ label, value, tone }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono truncate">{label}</div>
+      <div className={`font-mono text-sm font-medium mt-0.5 truncate ${tone}`}>{value}</div>
     </div>
   );
 }

@@ -6,11 +6,12 @@ import Panel from '@/components/ui/Panel';
 import {
   formatINR, getCategory, clampCycleResetDay, cycleEndDate, daysLeftInCycle,
   formatDateNice, currentCycleKey, cycleRangeLabel, DEFAULT_CYCLE_RESET_DAY,
+  isCredit, signedAmount, getCreditSource,
 } from '@/lib/utils';
 import { useToast } from '@/components/ui/Toast';
 
 export default function SettingsView({ store, goTo }) {
-  const { settings, updateSettings, categories, transactions, userEmail, clearAllData, signOut } = store;
+  const { settings, updateSettings, categories, creditSources, transactions, userEmail, clearAllData, signOut } = store;
   const toast = useToast();
   const [income, setIncome] = useState(settings.monthlyIncome || '');
   const [resetDay, setResetDay] = useState(settings.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY);
@@ -20,16 +21,28 @@ export default function SettingsView({ store, goTo }) {
   const [signingOut, setSigningOut] = useState(false);
 
   function exportJSON() {
-    const data = { categories, transactions, exportedAt: new Date().toISOString() };
+    const data = { categories, creditSources, transactions, exportedAt: new Date().toISOString() };
     downloadBlob(JSON.stringify(data, null, 2), `spendledger-backup-${new Date().toISOString().slice(0, 10)}.json`, 'application/json');
     toast('Backup exported', 'success');
   }
 
   function exportCSV() {
-    const header = ['Date', 'Category', 'Amount', 'Payment Method', 'Note'];
+    // `Signed amount` sums straight down the column in a spreadsheet: money out
+    // is positive, money in negative. `Amount` stays positive on both sides so
+    // the rows read the way the app shows them.
+    const header = ['Date', 'Type', 'Category', 'Source', 'Amount', 'Signed amount', 'Payment Method', 'Note'];
     const rows = transactions.map((t) => {
-      const cat = getCategory(categories, t.categoryId);
-      return [t.date, cat.name, t.amount, t.method || '', (t.note || '').replace(/,/g, ';')];
+      const cat = t.categoryId ? getCategory(categories, t.categoryId) : null;
+      return [
+        t.date,
+        isCredit(t) ? 'Credit' : 'Debit',
+        cat ? cat.name : '',
+        isCredit(t) ? getCreditSource(creditSources, t).name : '',
+        t.amount,
+        signedAmount(t),
+        t.method || '',
+        (t.note || '').replace(/,/g, ';'),
+      ];
     });
     const csv = [header, ...rows].map((r) => r.join(',')).join('\n');
     downloadBlob(csv, `spendledger-transactions-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv');

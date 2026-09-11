@@ -97,8 +97,9 @@ async function main() {
   }
 
   console.log('  → reading ledger (read-only)…');
-  const [cats, txs, buds, tots, sett] = await Promise.all([
+  const [cats, srcs, txs, buds, tots, sett] = await Promise.all([
     supabase.from('categories').select('*').order('created_at', { ascending: true }),
+    supabase.from('credit_sources').select('*').order('created_at', { ascending: true }),
     supabase.from('transactions').select('*').order('date', { ascending: false }),
     supabase.from('budgets').select('*'),
     supabase.from('monthly_totals').select('*'),
@@ -109,6 +110,8 @@ async function main() {
     if (res.error) fail(`Could not read ${name}: ${res.error.message}`);
   }
 
+  // Rows written before credits existed carry no `kind`; they are debits,
+  // which is exactly what they always were.
   const transactions = (txs.data || []).map((r) => ({
     id: r.id,
     amount: Number(r.amount),
@@ -116,6 +119,19 @@ async function main() {
     date: r.date,
     note: r.note || '',
     method: r.method || 'UPI',
+    kind: r.kind === 'credit' ? 'credit' : 'debit',
+    source: r.source || null,
+    sourceId: r.source_id || null,
+  }));
+
+  // Absent before migration 003; the snapshot still reads via each entry's
+  // frozen `source` label in that case.
+  const creditSources = (srcs.data || []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    color: r.color,
+    icon: r.icon,
+    offsetsSpend: !!r.offsets_spend,
   }));
 
   const categories = (cats.data || []).map((r) => ({
@@ -136,9 +152,11 @@ async function main() {
   for (const t of tots.data || []) totals[t.month_key] = Number(t.amount);
 
   const payload = {
-    version: 1,
+    // v2 entries carry `kind` and `source`; a v1 payload has neither.
+    version: 2,
     capturedAt: new Date().toISOString(),
     categories,
+    creditSources,
     transactions,
     budgets,
     totals,
@@ -152,7 +170,14 @@ async function main() {
       : null,
   };
 
-  const totalAmount = transactions.reduce((s, t) => s + t.amount, 0);
+  // Net spend — debits less the refunds handed back to a category — so the
+  // archive's headline matches what the app reports for the same entries.
+  const isCredit = (t) => t.kind === 'credit';
+  const totalAmount = transactions.reduce(
+    (s, t) => s + (isCredit(t) ? (t.categoryId ? -t.amount : 0) : t.amount),
+    0
+  );
+  const creditedIn = transactions.reduce((s, t) => s + (isCredit(t) ? t.amount : 0), 0);
 
   // 1. The copy in this folder.
   mkdirSync(BACKUP_DIR, { recursive: true });
@@ -183,7 +208,11 @@ async function main() {
   }
 
   await supabase.auth.signOut();
-  console.log(`\n  ${transactions.length} entries · ₹${totalAmount.toLocaleString('en-IN')} archived. Live ledger untouched.\n`);
+  console.log(
+    `\n  ${transactions.length} entries · ₹${totalAmount.toLocaleString('en-IN')} net spend` +
+    (creditedIn > 0 ? ` · ₹${creditedIn.toLocaleString('en-IN')} in` : '') +
+    ' archived. Live ledger untouched.\n'
+  );
 }
 
 main().catch((e) => fail(e?.message || String(e)));

@@ -70,7 +70,7 @@ app/login/page.js        Sign in / sign up page (email OTP + password)
 app/auth/callback/route.js   Exchanges a magic-link code for a session
 middleware.js             Refreshes the Supabase session + protects routes
 components/AppShell.js    Navigation shell (sidebar/bottom nav) + view routing
-components/views/         Overview, AddExpense, Transactions, Budgets, Categories, SettingsView
+components/views/         Overview, AddEntry, Transactions, Budgets, Categories, SettingsView
 components/ui/            Reusable primitives: Panel, Gauge, Modal, MonthSwitcher, Toast, ThemeToggle
 lib/supabase/client.js    Browser Supabase client
 lib/supabase/server.js    Server-side Supabase client (Server Components, route handlers)
