@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, Archive, Settings as SettingsIcon, Gauge as GaugeIcon } from 'lucide-react';
 import { useFinanceStore } from '@/lib/useFinanceStore';
 import { currentCycleKey, DEFAULT_CYCLE_RESET_DAY } from '@/lib/utils';
@@ -34,6 +34,16 @@ function AppInner({ store, banner = null }) {
   const monthKey = pickedKey ?? currentCycleKey(resetDay);
   const setMonthKey = setPickedKey;
 
+  // Redirecting is a side effect, so it cannot happen during render. In
+  // practice middleware.js already bounces unauthenticated traffic to /login;
+  // this only fires when a session expires while the app is open. A full
+  // location assignment rather than a router push is deliberate — it discards
+  // every scrap of client state belonging to the finished session.
+  const signedOut = store.hydrated && !store.userId;
+  useEffect(() => {
+    if (signedOut) window.location.href = '/login';
+  }, [signedOut]);
+
   if (!store.hydrated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -45,10 +55,7 @@ function AppInner({ store, banner = null }) {
     );
   }
 
-  if (!store.userId) {
-    if (typeof window !== 'undefined') window.location.href = '/login';
-    return null;
-  }
+  if (!store.userId) return null;   // the effect above is doing the redirect
 
   const viewProps = { store, monthKey, setMonthKey, goTo: setTab };
 

@@ -36,6 +36,7 @@ export default function AddEntry({ store }) {
   // one is deleted from the Categories screen while this form is open.
   useEffect(() => {
     if (creditSources.length && !creditSources.some((s) => s.id === sourceId)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSourceId(creditSources[0].id);
     }
   }, [creditSources, sourceId]);
@@ -43,6 +44,7 @@ export default function AddEntry({ store }) {
   // Picking a source moves the refund switch to that source's usual answer,
   // but only as a starting point — it stays overridable.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (credit && source) setOffsets(!!source.offsetsSpend);
   }, [sourceId, credit, source]);
 

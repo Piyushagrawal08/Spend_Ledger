@@ -34,6 +34,7 @@ export default function CategoryModal({ modal, onClose, onSubmit, variant = 'cat
   // the first row it was ever opened with.
   useEffect(() => {
     if (!modal) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setName(item?.name || '');
     setColor(item?.color || (isSource ? '#3DDC97' : PALETTE[0]));
     setIcon(item?.icon || (isSource ? 'Banknote' : ICON_NAMES[0]));

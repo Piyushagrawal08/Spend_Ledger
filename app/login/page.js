@@ -101,7 +101,7 @@ export default function LoginPage() {
               <Field icon={Mail} type="email" placeholder="you@example.com" value={email} onChange={setEmail} required autoFocus />
               <SubmitButton loading={loading} label="Send code" />
               <p className="text-[11px] text-paper-500 text-center leading-relaxed">
-                No password needed — we'll email you a one-time 6-digit code. New here? This creates your account automatically.
+                No password needed — we&apos;ll email you a one-time 6-digit code. New here? This creates your account automatically.
               </p>
             </form>
           )}

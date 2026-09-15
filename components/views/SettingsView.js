@@ -279,7 +279,7 @@ export default function SettingsView({ store, goTo }) {
 
       <Panel title="Roll unspent money over" eyebrow="last cycle's balance lands in the next one">
         <p className="text-xs text-paper-300 leading-relaxed mb-3">
-          With this on, whatever is left of a cycle's budget moves into the next one, like a running
+          With this on, whatever is left of a cycle&apos;s budget moves into the next one, like a running
           account balance. Budget <span className="text-paper-100">{formatINR(26000)}</span>, spend{' '}
           <span className="text-paper-100">{formatINR(21000)}</span>, and the next cycle is{' '}
           <span className="text-signal-green">{formatINR(31000)}</span>. Overspend and the deficit

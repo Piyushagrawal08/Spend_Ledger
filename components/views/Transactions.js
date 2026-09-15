@@ -230,6 +230,7 @@ function EditModal({ tx, categories, creditSources, onClose, onSave }) {
 
   useEffect(() => {
     if (!tx) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setKind(isCredit(tx) ? CREDIT : DEBIT);
     setAmount(tx.amount);
     setCategoryId(tx.categoryId || '');
