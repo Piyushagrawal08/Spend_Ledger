@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import {
   TrendingUp, TrendingDown, Wallet, CalendarDays, Flame, ArrowRight, Sparkles,
-  Coins, Minus, CalendarClock, ArrowDownLeft, SlidersHorizontal, X,
+  Coins, Minus, CalendarClock, ArrowDownLeft, SlidersHorizontal, X, Landmark,
 } from 'lucide-react';
 import Panel from '@/components/ui/Panel';
 import Gauge from '@/components/ui/Gauge';
@@ -15,6 +15,7 @@ import { useTheme } from '@/lib/ThemeContext';
 import {
   formatINR, formatCompactINR, formatDateNice, sum, groupBy, getCategory,
   ledgerTotals, netSpend, netSpendByCategory, isCredit, isDebit, isIncome, getCreditSource,
+  cycleCashSummary,
   cycleEndDate, cycleLengthDays, cycleRangeLabel,
   cycleDateAtOffset, elapsedDaysInCycle, daysLeftInCycle, isCycleOpen, filterCycle,
   shiftMonth, lastMonthKeys, monthShortLabel, monthLabel, pctChange,
@@ -25,7 +26,7 @@ const UNCAT_ID = '__uncategorized__';
 const TREND_MONTHS = 6;
 
 export default function Overview({ store, monthKey, setMonthKey, goTo }) {
-  const { transactions, categories, creditSources, budgetFor, settings } = store;
+  const { transactions, categories, creditSources, budgetFor, budgetOriginFor, settings } = store;
   const { theme } = useTheme();
   const resetDay = settings?.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY;
 
@@ -82,8 +83,14 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   const flow = useMemo(() => ledgerTotals(monthTx), [monthTx]);
   const totalSpent = flow.netSpend;
   // Budget follows the slice too, so "spent vs allocated" stays a fair pairing.
+  // `budgetFor` already returns the effective figure, rollover included, so
+  // this screen and the Budgets screen can never quote different numbers for
+  // the same cycle. Kept separately only so the KPI can say where it came from.
   const totalBudget = sum(slicedCategories, (c) => budgetFor(monthKey, c.id));
   const remaining = totalBudget - totalSpent;
+  const budgetRollover = settings?.carryForward
+    ? sum(slicedCategories, (c) => budgetOriginFor(monthKey, c.id).rollover || 0)
+    : 0;
 
   // ── Cycle maths ─────────────────────────────────────────────────────
   // The window is [resetDay of this month, resetDay of next month), so every
@@ -99,6 +106,21 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
   const leftPerDay = daysLeft > 0 ? remaining / daysLeft : null;
   const projected = cycleOpen ? dailyAvg * cycleDays : totalSpent;
   const pct = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+
+  // ── Running cash balance ────────────────────────────────────────────
+  // The one figure on this screen that is absolute rather than relative:
+  // actual money, anchored on the opening balance from settings.
+  //
+  // It reads `transactions` — the WHOLE ledger — not `monthTx`, and that is
+  // deliberate. Income carries no category, so the slicer's matcher drops
+  // every credit while a slice is active; feeding it sliced entries would
+  // silently turn the balance into a spend total. It also needs every entry
+  // before this cycle to know what carried in, which `monthTx` cannot give.
+  const openingBalance = settings?.openingBalance || 0;
+  const cash = useMemo(
+    () => cycleCashSummary(transactions, monthKey, resetDay, openingBalance),
+    [transactions, monthKey, resetDay, openingBalance]
+  );
 
   // ── Cycle-over-cycle ────────────────────────────────────────────────
   const prevMonthKey = shiftMonth(monthKey, -1);
@@ -229,6 +251,52 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         </button>
       </div>
 
+      {/* ── Carry-forward strip ───────────────────────────────────────
+          Deliberately ABOVE the slicer. Every panel below the filter reads
+          sliced entries; this one reads the whole ledger, because income has
+          no category and a slice would drop every credit. Sitting above the
+          control is the visual promise that the filter does not reach it. */}
+      <div className="rounded-xl border border-ink-border bg-ink-850/50 px-4 py-3">
+        <div className="flex items-center gap-2 mb-3">
+          <Landmark size={12} className="text-signal-green shrink-0" />
+          <span className="text-[10px] uppercase tracking-[0.16em] text-paper-500 font-mono shrink-0">
+            carry-forward
+          </span>
+          {sliced ? (
+            <span className="ml-auto text-[10px] font-mono text-paper-600 shrink-0">
+              whole ledger · ignores the filter
+            </span>
+          ) : openingBalance === 0 ? (
+            <button
+              onClick={() => goTo('settings')}
+              className="ml-auto text-[10px] font-mono text-paper-600 hover:text-signal-amber transition-colors text-right min-w-0 truncate"
+            >
+              net since tracking began · set an opening balance
+            </button>
+          ) : null}
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-3 gap-y-3 sm:flex sm:flex-wrap sm:items-end">
+          <CashCell
+            label={`Remaining from ${monthShortLabel(prevMonthKey)}`}
+            value={formatINR(cash.opening)}
+            tone={cash.opening < 0 ? 'text-signal-red' : 'text-paper-100'}
+            strong
+          />
+          <CashOp symbol="+" />
+          <CashCell label="Money in" value={formatINR(cash.credits)} tone="text-signal-green" />
+          <CashOp symbol="−" />
+          <CashCell label="Money out" value={formatINR(cash.debits)} tone="text-paper-300" />
+          <CashOp symbol="=" />
+          <CashCell
+            label={`Balance of ${monthShortLabel(monthKey)}`}
+            value={formatINR(cash.closing)}
+            tone={cash.closing < 0 ? 'text-signal-red' : 'text-signal-green'}
+            strong
+          />
+        </div>
+      </div>
+
       {/* The slicer. One control, every panel below. */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-ink-border bg-ink-850/50 px-3.5 py-2.5">
         <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.16em] text-paper-500 font-mono shrink-0">
@@ -308,7 +376,9 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
             flow.refunds > 0
               ? `${formatINR(flow.debits)} out less ${formatCompactINR(flow.refunds)} refunded`
               : totalBudget > 0
-                ? `of ${formatINR(totalBudget)} allocated`
+                ? budgetRollover !== 0
+                  ? `of ${formatINR(totalBudget)} — incl. ${budgetRollover > 0 ? '+' : '−'}${formatCompactINR(Math.abs(budgetRollover))} rolled over`
+                  : `of ${formatINR(totalBudget)} allocated`
                 : 'no budget set'
           }
           accent={pct > 100 ? 'red' : 'amber'}
@@ -330,7 +400,11 @@ export default function Overview({ store, monthKey, setMonthKey, goTo }) {
         />
         <Kpi
           icon={TrendingUp}
-          label="Remaining balance"
+          // Renamed off "Remaining balance" when the carry-forward strip landed:
+          // that strip owns the word "balance" for actual cash, and two numbers
+          // on one screen called balance meaning different things is how a
+          // budget figure gets mistaken for money in the bank.
+          label="Budget left"
           value={formatINR(remaining)}
           sub={remaining < 0 ? 'over allocated budget' : cycleOpen ? `${daysLeft} day(s) to reset` : 'cycle closed'}
           accent={remaining < 0 ? 'red' : 'green'}
@@ -688,6 +762,36 @@ function FlowCell({ label, value, tone }) {
     <div className="min-w-0">
       <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono truncate">{label}</div>
       <div className={`font-mono text-sm font-medium mt-0.5 truncate ${tone}`}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * One term of the carry-forward arithmetic. `strong` marks the two figures
+ * that are the point of the strip — what carried in, and what it closes on —
+ * so the connective money in/out terms stay visibly subordinate.
+ */
+function CashCell({ label, value, tone, strong }) {
+  return (
+    <div className="min-w-0 sm:flex-1">
+      <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono truncate">{label}</div>
+      <div
+        className={`font-mono mt-0.5 truncate ${tone} ${
+          strong ? 'text-base sm:text-lg font-semibold' : 'text-sm font-medium'
+        }`}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/** The operator between two terms. Hidden on mobile, where the strip is a 2x2
+    grid and the symbols would land in meaningless places. */
+function CashOp({ symbol }) {
+  return (
+    <div className="hidden sm:block shrink-0 pb-1 font-mono text-sm text-paper-600" aria-hidden="true">
+      {symbol}
     </div>
   );
 }

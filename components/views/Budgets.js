@@ -40,9 +40,16 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
   const totalOrigin = monthlyTotalOriginFor(monthKey);
   const monthlyTotal = totalOrigin.amount !== null ? totalOrigin.amount : allocated;
   const unallocated = monthlyTotal - allocated;
+  const rolloverOn = !!settings?.carryForward;
+  const totalRollover = totalOrigin.rollover || 0;
 
+  // The input always edits the BASE budget — the number you typed — never the
+  // effective one. Showing the rollover here would bake it into the base the
+  // moment you hit save, and the same money would be counted twice.
   function draftFor(catId) {
-    return drafts[catId] !== undefined ? drafts[catId] : budgetFor(monthKey, catId);
+    return drafts[catId] !== undefined
+      ? drafts[catId]
+      : budgetOriginFor(monthKey, catId).base;
   }
 
   async function handleSaveCategoryBudget(catId) {
@@ -132,7 +139,7 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
               <span className="text-paper-500 font-mono text-sm">₹</span>
               <input
                 type="number" min="0" step="500"
-                placeholder={String(monthlyTotal)}
+                placeholder={String(totalOrigin.base ?? monthlyTotal)}
                 value={totalDraft}
                 onChange={(e) => setTotalDraft(e.target.value)}
                 className="w-full bg-transparent outline-none text-sm font-mono text-paper-100"
@@ -153,10 +160,26 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
           </p>
         )}
 
+        {rolloverOn && totalRollover !== 0 && (
+          <p className={classNames(
+            'text-[11px] font-mono mt-2',
+            totalRollover > 0 ? 'text-signal-green' : 'text-signal-red'
+          )}>
+            {totalRollover > 0
+              ? `+ ${formatINR(totalRollover)} rolled over from last cycle — ${formatINR(totalOrigin.base ?? 0)} budget becomes ${formatINR(monthlyTotal)}`
+              : `− ${formatINR(-totalRollover)} overspent last cycle — ${formatINR(totalOrigin.base ?? 0)} budget becomes ${formatINR(monthlyTotal)}`}
+          </p>
+        )}
+
         <div className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-ink-border">
           <div>
             <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono">Cycle budget</div>
             <div className="font-display text-base font-semibold text-paper-100 mt-1">{formatINR(monthlyTotal)}</div>
+            {rolloverOn && totalRollover !== 0 && (
+              <div className="text-[10px] font-mono text-paper-500 mt-0.5">
+                {formatINR(totalOrigin.base ?? 0)} set {totalRollover > 0 ? '+' : '−'} {formatINR(Math.abs(totalRollover))} rollover
+              </div>
+            )}
           </div>
           <div>
             <div className="text-[10px] uppercase tracking-wide text-paper-500 font-mono">Allocated</div>
@@ -239,6 +262,14 @@ export default function Budgets({ store, monthKey, setMonthKey }) {
                       <span className="text-paper-600">set for this cycle</span>
                     )}
                   </div>
+                  {rolloverOn && origin.rollover !== 0 && (
+                    <div className={classNames(
+                      'text-[10px] font-mono mt-0.5 truncate',
+                      origin.rollover > 0 ? 'text-signal-green' : 'text-signal-red'
+                    )}>
+                      {formatINR(origin.base)} {origin.rollover > 0 ? '+' : '−'} {formatINR(Math.abs(origin.rollover))} rolled over
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={() => handleDeleteCategory(c)}

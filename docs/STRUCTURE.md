@@ -87,6 +87,15 @@ return slice.includes(t.categoryId || UNCAT_ID);
 stays a fair pairing. **A new panel on this screen must read from the sliced
 `monthTx`, not from `transactions`.**
 
+**The one exception: the carry-forward strip.** It sits *above* the slicer and
+reads the whole ledger. Income carries no category, so the matcher above drops
+every credit while a slice is active — feeding sliced entries to a cash balance
+would silently turn it into a spend total. It also needs every entry *before*
+this cycle to know what carried in, which `monthTx` cannot give. Its position
+above the control is the visual promise that the filter does not reach it, and
+it says so explicitly whenever a slice is on. If you add another absolute-money
+panel, put it there too; anything relative belongs below the slicer.
+
 ### Add entry — the symmetry rule
 
 The form is one component with a `kind` toggle. The Money out and Money in
@@ -129,6 +138,7 @@ Taxonomy   addCategory  updateCategory  deleteCategory
            addCreditSource  updateCreditSource  deleteCreditSource
 Budgets    setBudget  budgetFor  budgetOriginFor
            setMonthlyTotal  monthlyTotalFor  monthlyTotalOriginFor
+           rolloverTotalFor  rolloverForCategory
 Settings   updateSettings
 Backups    createSnapshot  getSnapshot  deleteSnapshot
 Danger     clearAllData  signOut
@@ -146,6 +156,7 @@ cat    { id, name, color, icon, defaultBudget }
 source { id, name, color, icon, offsetsSpend }
 budgets{ 'YYYY-MM': { categoryId: amount } }
 totals { 'YYYY-MM': amount }
+setting{ monthlyIncome, currency, carryForward, cycleResetDay, openingBalance }
 ```
 
 Both stores tolerate a table that does not exist yet (pre-migration) by
@@ -186,6 +197,36 @@ to the day before it in the next, keyed by its opening month. With reset day 7,
 later cycle until changed. Read-side only; no cycle is ever written on the
 user's behalf. Falls back to the category's `defaultBudget`.
 
+**Rollover is a different thing — do not conflate the two.** *Carried* is the
+budget **number** persisting; *rollover* is the unspent **money** moving. Set
+26,000 and spend 21,000 and the next cycle is 31,000; overspend to 29,000 and
+it is 23,000, exactly like a running account balance. Gated on
+`settings.carryForward` (a column that existed unused until this landed), and
+it runs as **two independent chains** — one on the total cycle budget, one per
+category — each folding forward from the first cycle that has a *stored*
+figure, so a category you never budgeted can never accrue a phantom balance
+out of its default. Also read-side only: turning the setting off restores every
+number exactly as it was.
+
+**Running cash balance — the only absolute number in the app.** Everything
+else is relative: what you spent, what is left of an allocation. `openingBalance`
+(settings) is the cash held before the oldest entry, and `cycleCashSummary()` in
+`lib/utils.js` walks the ledger from there: `opening + netFlow = closing`, where
+a cycle's `opening` is the previous cycle's `closing` by construction — the same
+walk one boundary earlier, so the chain cannot disagree with itself. Refunds
+count as cash in here, unlike in `netSpend` where they come off a category; the
+money came back either way. Read-side only, like carry-forward and rollover: no
+balance is ever stored, so a back-dated entry re-derives every later figure
+instead of leaving a stale total behind. `openingBalance` of 0 is valid and
+means "net since you started tracking". **Never pass these helpers a
+category-filtered list** — income has no category, so a slice drops every credit.
+
+`budgetOriginFor` / `monthlyTotalOriginFor` return `{ amount, base, rollover,
+origin, from }` where `amount` is the **effective** figure (base + rollover) so
+no two screens can disagree. **Populate any input from `base`, never `amount`**
+— saving `amount` back would bake the rollover into the base and count the same
+money twice.
+
 ---
 
 ## 6. Database
@@ -200,7 +241,7 @@ existing project runs, **in order**.
 | `transactions` | amount (>0), date, kind, category_id, source_id, source, method, note |
 | `budgets` | month_key, category_id, amount — unique per (user, month, category) |
 | `monthly_totals` | month_key, amount |
-| `user_settings` | monthly_income, currency, carry_forward, cycle_reset_day (1–28) |
+| `user_settings` | monthly_income, currency, carry_forward, cycle_reset_day (1–28), opening_balance |
 | `ledger_snapshots` | label, source, payload jsonb, tx_count, total_amount |
 
 Every table has RLS keyed on `auth.uid() = user_id`. `ledger_snapshots` is
@@ -209,7 +250,7 @@ append-only: no UPDATE policy, plus a trigger that rejects updates outright.
 credit sources.
 
 Migrations: `001` cycle reset day + snapshots · `002` credits alongside debits
-· `003` editable credit sources.
+· `003` editable credit sources · `004` opening balance.
 
 **Rules.** Additive only — no `DROP TABLE`, `DROP COLUMN`, `DELETE`,
 `TRUNCATE`. Safe to re-run. Existing rows keep their meaning. Mirror every
@@ -246,6 +287,13 @@ are picked per-theme inside `Overview.js`.
 `lib/demoData.js` builds a deterministic ledger from a fixed-seed PRNG:
 ~474 entries over 7 cycles, both credit flavours present, budgets set on the
 oldest cycle so later ones show "carried". Two snapshots with frozen payloads.
+`openingBalance` is seeded at 45,000 — non-zero on purpose, or the carry-in
+line would read "nothing carried" on the oldest cycle and the anchor half of the
+balance would be invisible on the review screen.
+`carryForward` is on, and the seeded total (58,000) is tuned so the rollover
+chain shows **both** signs against this ledger — the early cycles overspend and
+hand a deficit forward, the current one opens about +3,600 up. Re-tune it if
+the generator's spend changes, or half the feature stops being visible.
 
 Rules: no network calls; no unseeded `Math.random()` or within-day varying
 time; never seed data dated after today. To make a new feature reviewable, add
@@ -256,7 +304,7 @@ visible in it.
 
 ## 9. Scripts
 
-`npm run dev` · `build` · `start` · `lint` · `backup`.
+`npm run dev` · `build` · `start` · `lint` · `backup` · `test` · `test:watch`.
 
 `scripts/backup-ledger.mjs` signs in as the user through RLS (no service-role
 key), reads every table, writes `backups/ledger-<stamp>.json`, and inserts the
@@ -265,7 +313,30 @@ tables must be added here too or backups quietly lose them.
 
 ---
 
-## 10. Change checklist
+## 10. Tests
+
+`npm test` (vitest, `vitest.config.mjs` mirrors the `@/` alias). Node
+environment, no jsdom — `tests/helpers/callHook.js` exercises
+`useBudgetSelectors` through a one-shot server render, which is enough because
+the hook is `useMemo`/`useCallback` only.
+
+| File | Guards |
+|---|---|
+| `tests/cashBalance.test.js` | `opening + netFlow = closing`, the cycle-to-cycle chain, back-dating and deletion re-deriving later cycles |
+| `tests/cycles.test.js` | reset-day boundaries, Dec→Jan, leap February, reset day 1 and 28, no entry lost between cycles |
+| `tests/ledgerTotals.test.js` | debit/refund/income classification, `netSpend` vs `netFlow`, source label surviving deletion |
+| `tests/rollover.test.js` | carried vs rollover kept apart, both chains, the `base` vs `amount` double-count trap |
+| `tests/demoData.test.js` | determinism, never seeds the future, both credit flavours present, the demo's own cash chain |
+
+These are money calculations, so the suite is mutation-checked: breaking the
+boundary comparison in `cashBalanceBefore`, dropping the opening-balance anchor,
+reclassifying refunds as income, keying cycles by calendar month, or baking
+rollover into `base` each make it fail. **If you change a financial rule and
+nothing goes red, the test for it is missing — add it before shipping.**
+
+---
+
+## 11. Change checklist
 
 - [ ] Read this file, and the files the change actually touches.
 - [ ] Both sides of a two-sided feature updated (debit *and* credit).
@@ -273,5 +344,6 @@ tables must be added here too or backups quietly lose them.
 - [ ] `lib/demoData.js` shows the new case.
 - [ ] Migration written **and** mirrored into `schema.sql`.
 - [ ] `scripts/backup-ledger.mjs` covers any new table/column.
+- [ ] `npm test` green, and a new financial rule has a test that fails without it.
 - [ ] `npm run build` clean.
 - [ ] Verified on `/demo`, then on the real app.

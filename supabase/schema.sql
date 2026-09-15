@@ -6,6 +6,7 @@
 --   001_cycle_reset_and_snapshots.sql   cycle reset day + ledger snapshots
 --   002_credit_entries.sql              credits alongside debits
 --   003_credit_sources.sql              editable credit sources
+--   004_opening_balance.sql             opening balance for the running cash balance
 -- Each adds only what is new and contains no DROP at all, so neither can
 -- touch your existing rows, policies or triggers.
 --
@@ -109,12 +110,22 @@ create table if not exists public.user_settings (
   carry_forward boolean not null default false,
   -- Day of the following month on which the spend cycle resets (default the 7th).
   -- "Remaining days" counts from today up to this date, not to the month end.
-  cycle_reset_day smallint not null default 7 check (cycle_reset_day between 1 and 28)
+  cycle_reset_day smallint not null default 7 check (cycle_reset_day between 1 and 28),
+  -- Cash on hand the moment before the oldest entry in the ledger. The anchor
+  -- that turns the relative figures (spent, budgeted, left) into an absolute
+  -- running balance. Read-side only: no balance is ever stored per cycle, so a
+  -- back-dated entry re-derives every later figure rather than leaving a stale
+  -- total behind. 0 means "net since you started tracking".
+  opening_balance numeric not null default 0
 );
 
 -- Migration for projects created before the spend-cycle setting existed:
 alter table public.user_settings
   add column if not exists cycle_reset_day smallint not null default 7;
+
+-- Migration for projects created before the opening balance existed:
+alter table public.user_settings
+  add column if not exists opening_balance numeric not null default 0;
 
 do $$
 begin
