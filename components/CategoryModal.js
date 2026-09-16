@@ -9,18 +9,21 @@ import { classNames } from '@/lib/utils';
 const PALETTE = ['#F2A93B', '#3DDC97', '#5B9DF2', '#F2545B', '#9B8CF2', '#F27CA3', '#4FD1E7', '#7EDB6F', '#E7C24F', '#38BDF8', '#8A93A6', '#FB923C'];
 
 /**
- * Edits either taxonomy. `variant` decides which fields apply:
+ * Edits any of the three taxonomies. `variant` decides which fields apply:
  *
  *   'category'  a spend category — carries a default monthly budget
  *   'source'    a credit source  — no budget (you do not budget money coming
  *               in), but a "usually a refund" default instead
+ *   'person'    someone you lend to or borrow from — neither, because you
+ *               budget a friend even less than you budget your salary
  *
- * Both sides get the same name / colour / icon controls, which is the point:
- * managing where money comes from should feel exactly like managing where it
- * goes.
+ * All three get the same name / colour / icon controls, which is the point:
+ * managing where money comes from, where it goes, and who is holding it
+ * should all feel like the same act.
  */
 export default function CategoryModal({ modal, onClose, onSubmit, variant = 'category' }) {
   const isSource = variant === 'source';
+  const isPerson = variant === 'person';
   const item = modal?.cat;
 
   const [name, setName] = useState('');
@@ -36,16 +39,26 @@ export default function CategoryModal({ modal, onClose, onSubmit, variant = 'cat
     if (!modal) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setName(item?.name || '');
-    setColor(item?.color || (isSource ? '#3DDC97' : PALETTE[0]));
-    setIcon(item?.icon || (isSource ? 'Banknote' : ICON_NAMES[0]));
+    setColor(item?.color || (isSource ? '#3DDC97' : isPerson ? '#9B8CF2' : PALETTE[0]));
+    setIcon(item?.icon || (isSource ? 'Banknote' : isPerson ? 'UserRound' : ICON_NAMES[0]));
     setBudget(item?.defaultBudget ?? 1000);
     setOffsetsSpend(!!item?.offsetsSpend);
-  }, [modal, item, isSource]);
+  }, [modal, item, isSource, isPerson]);
 
   if (!modal) return null;
 
-  const noun = isSource ? 'credit source' : 'category';
-  const accent = isSource ? 'signal-green' : 'signal-amber';
+  const noun = isSource ? 'credit source' : isPerson ? 'person' : 'category';
+  const accent = isSource ? 'signal-green' : isPerson ? 'signal-violet' : 'signal-amber';
+  const focusBorder = isSource
+    ? 'focus:border-signal-green/60'
+    : isPerson
+      ? 'focus:border-signal-violet/60'
+      : 'focus:border-signal-amber/60';
+  const submitBtn = isSource
+    ? 'bg-signal-green hover:bg-emerald-400'
+    : isPerson
+      ? 'bg-signal-violet hover:bg-violet-400'
+      : 'bg-signal-amber hover:bg-amber-400';
 
   return (
     <Modal
@@ -60,7 +73,9 @@ export default function CategoryModal({ modal, onClose, onSubmit, variant = 'cat
           onSubmit(
             isSource
               ? { name: name.trim(), color, icon, offsetsSpend }
-              : { name: name.trim(), color, icon, defaultBudget: Number(budget) || 0 }
+              : isPerson
+                ? { name: name.trim(), color, icon }
+                : { name: name.trim(), color, icon, defaultBudget: Number(budget) || 0 }
           );
         }}
         className="space-y-4"
@@ -70,15 +85,15 @@ export default function CategoryModal({ modal, onClose, onSubmit, variant = 'cat
           <input
             autoFocus
             type="text" value={name} onChange={(e) => setName(e.target.value)}
-            placeholder={isSource ? 'e.g. Investment payout' : 'e.g. Subscriptions'}
+            placeholder={isSource ? 'e.g. Investment payout' : isPerson ? 'e.g. Aarav' : 'e.g. Subscriptions'}
             className={classNames(
               'w-full rounded-xl border border-ink-border bg-ink-850 px-3 py-2.5 text-sm text-paper-100 outline-none',
-              isSource ? 'focus:border-signal-green/60' : 'focus:border-signal-amber/60'
+              focusBorder
             )}
           />
         </div>
 
-        {isSource ? (
+        {isPerson ? null : isSource ? (
           <label className="flex items-start gap-2.5 cursor-pointer rounded-xl border border-ink-border bg-ink-850/60 p-3.5">
             <input
               type="checkbox"
@@ -150,7 +165,7 @@ export default function CategoryModal({ modal, onClose, onSubmit, variant = 'cat
           type="submit"
           className={classNames(
             'w-full rounded-xl text-ink-950 font-display font-semibold text-sm py-2.5 transition-colors',
-            isSource ? 'bg-signal-green hover:bg-emerald-400' : 'bg-signal-amber hover:bg-amber-400'
+            submitBtn
           )}
         >
           {modal.mode === 'add' ? `Create ${noun}` : 'Save changes'}

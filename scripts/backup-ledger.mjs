@@ -97,9 +97,11 @@ async function main() {
   }
 
   console.log('  → reading ledger (read-only)…');
-  const [cats, srcs, txs, buds, tots, sett] = await Promise.all([
+  const [cats, srcs, ppl, lends, txs, buds, tots, sett] = await Promise.all([
     supabase.from('categories').select('*').order('created_at', { ascending: true }),
     supabase.from('credit_sources').select('*').order('created_at', { ascending: true }),
+    supabase.from('people').select('*').order('created_at', { ascending: true }),
+    supabase.from('lending_entries').select('*').order('date', { ascending: false }),
     supabase.from('transactions').select('*').order('date', { ascending: false }),
     supabase.from('budgets').select('*'),
     supabase.from('monthly_totals').select('*'),
@@ -122,6 +124,27 @@ async function main() {
     kind: r.kind === 'credit' ? 'credit' : 'debit',
     source: r.source || null,
     sourceId: r.source_id || null,
+  }));
+
+  // The lending ledger — money to and from friends, which lives in its own
+  // tables and never mixes with the spend ledger. Absent before migration 005,
+  // and a backup taken then simply has none of it.
+  const people = (ppl.data || []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    color: r.color,
+    icon: r.icon,
+  }));
+
+  const lendingEntries = (lends.data || []).map((r) => ({
+    id: r.id,
+    personId: r.person_id || null,
+    person: r.person || null,
+    direction: r.direction === 'in' ? 'in' : 'out',
+    amount: Number(r.amount),
+    date: r.date,
+    note: r.note || '',
+    method: r.method || 'UPI',
   }));
 
   // Absent before migration 003; the snapshot still reads via each entry's
@@ -153,11 +176,14 @@ async function main() {
 
   const payload = {
     // v2 entries carry `kind` and `source`; a v1 payload has neither.
-    version: 2,
+    // v3 adds the lending ledger, which a v2 payload simply does not have.
+    version: 3,
     capturedAt: new Date().toISOString(),
     categories,
     creditSources,
+    people,
     transactions,
+    lendingEntries,
     budgets,
     totals,
     settings: sett.data
@@ -166,6 +192,7 @@ async function main() {
           currency: sett.data.currency || 'INR',
           carryForward: !!sett.data.carry_forward,
           cycleResetDay: Number(sett.data.cycle_reset_day) || 7,
+          openingBalance: Number(sett.data.opening_balance) || 0,
         }
       : null,
   };
@@ -211,6 +238,7 @@ async function main() {
   console.log(
     `\n  ${transactions.length} entries · ₹${totalAmount.toLocaleString('en-IN')} net spend` +
     (creditedIn > 0 ? ` · ₹${creditedIn.toLocaleString('en-IN')} in` : '') +
+    (lendingEntries.length > 0 ? ` · ${lendingEntries.length} lending entries` : '') +
     ' archived. Live ledger untouched.\n'
   );
 }

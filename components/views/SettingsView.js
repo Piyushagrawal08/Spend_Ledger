@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Download, Trash2, ShieldCheck, Wallet2, LogOut, UserCircle, RotateCcw, CalendarClock, Archive, ChevronRight, Landmark } from 'lucide-react';
+import { Download, Trash2, ShieldCheck, Wallet2, LogOut, UserCircle, RotateCcw, CalendarClock, Archive, ChevronRight, Landmark, Tags } from 'lucide-react';
 import Panel from '@/components/ui/Panel';
 import {
   formatINR, getCategory, clampCycleResetDay, cycleEndDate, daysLeftInCycle,
@@ -11,7 +11,7 @@ import {
 import { useToast } from '@/components/ui/Toast';
 
 export default function SettingsView({ store, goTo }) {
-  const { settings, updateSettings, categories, creditSources, transactions, userEmail, clearAllData, signOut } = store;
+  const { settings, updateSettings, categories, creditSources, people, lendingEntries, transactions, userEmail, clearAllData, signOut } = store;
   const toast = useToast();
   const [income, setIncome] = useState(settings.monthlyIncome || '');
   const [opening, setOpening] = useState(settings.openingBalance || '');
@@ -37,7 +37,14 @@ export default function SettingsView({ store, goTo }) {
   }
 
   function exportJSON() {
-    const data = { categories, creditSources, transactions, exportedAt: new Date().toISOString() };
+    // The lending ledger rides along: leaving it out would mean a "copy of
+    // your data" quietly missing the record of who owes you money.
+    const data = {
+      categories, creditSources, transactions,
+      people: people || [],
+      lendingEntries: lendingEntries || [],
+      exportedAt: new Date().toISOString(),
+    };
     downloadBlob(JSON.stringify(data, null, 2), `spendledger-backup-${new Date().toISOString().slice(0, 10)}.json`, 'application/json');
     toast('Backup exported', 'success');
   }
@@ -325,6 +332,29 @@ export default function SettingsView({ store, goTo }) {
                 : 'each cycle starts at exactly the budget you set'}
             </span>
           </span>
+        </button>
+      </Panel>
+
+      {/* The phone's bottom bar has no room for Categories, so this is how it
+          is reached there. Removing this link strands the screen on mobile —
+          see MOBILE_HIDDEN in components/AppShell.js. */}
+      <Panel title="Categories &amp; sources" eyebrow="where money goes, and where it comes from">
+        <button
+          onClick={() => goTo?.('categories')}
+          className="w-full flex items-center gap-2.5 rounded-xl border border-ink-border bg-ink-850 hover:bg-ink-700 px-4 py-3 text-left transition-colors"
+        >
+          <span className="w-8 h-8 rounded-lg bg-signal-amber/12 flex items-center justify-center shrink-0">
+            <Tags size={15} className="text-signal-amber" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm text-paper-100">
+              {categories.length} categor{categories.length === 1 ? 'y' : 'ies'} · {creditSources.length} credit source{creditSources.length === 1 ? '' : 's'}
+            </span>
+            <span className="block text-[11px] font-mono text-paper-500 mt-0.5">
+              rename, recolour or add to either list
+            </span>
+          </span>
+          <ChevronRight size={15} className="text-paper-500 shrink-0" />
         </button>
       </Panel>
 

@@ -7,6 +7,7 @@
 --   002_credit_entries.sql              credits alongside debits
 --   003_credit_sources.sql              editable credit sources
 --   004_opening_balance.sql             opening balance for the running cash balance
+--   005_lending.sql                     lending ledger: money to/from friends
 -- Each adds only what is new and contains no DROP at all, so neither can
 -- touch your existing rows, policies or triggers.
 --
@@ -224,6 +225,66 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- ── Lending ledger (money between you and a friend) ────────────────────
+-- Deliberately OUTSIDE the tables above. Lending is not spending and being
+-- repaid is not income: the money buys nothing and belongs to no budget, it
+-- is simply a debt waiting to be settled. Keeping it in its own tables is
+-- what stops it inflating a spend total or the running cash balance.
+--
+-- `people` is a third taxonomy, shaped like categories and credit_sources
+-- minus the money fields. Nothing seeds it — whose names belong there is
+-- personal.
+
+create table if not exists public.people (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  color text not null default '#9B8CF2',
+  icon text not null default 'UserRound',
+  created_at timestamptz not null default now()
+);
+
+-- One row per movement between you and one person. `amount` is always
+-- POSITIVE; the direction lives in its own column, never in the sign:
+--
+--   direction = 'out'  money left your pocket toward them (you lent, or you
+--                      paid back what you owed)
+--   direction = 'in'   money came to you from them (they repaid, or you
+--                      borrowed)
+--
+-- A repayment is an entry the other way, so there is no "settled" flag: the
+-- balance per person is derived as (out − in) and cannot drift from the rows
+-- beneath it. `person_id` links to the editable row so a rename propagates;
+-- `person` freezes the label so history survives that row being deleted —
+-- the same pair, for the same reason, as transactions.source_id / .source.
+create table if not exists public.lending_entries (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  person_id uuid references public.people(id) on delete set null,
+  person text,                           -- the label as written, frozen
+  direction text not null default 'out' check (direction in ('out', 'in')),
+  amount numeric not null check (amount > 0),
+  date date not null,
+  note text default '',
+  method text default 'UPI',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_people_user on public.people (user_id);
+create index if not exists idx_lending_user_date on public.lending_entries (user_id, date desc);
+create index if not exists idx_lending_person on public.lending_entries (person_id);
+
+alter table public.people enable row level security;
+alter table public.lending_entries enable row level security;
+
+drop policy if exists people_owner on public.people;
+create policy people_owner on public.people
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists lending_entries_owner on public.lending_entries;
+create policy lending_entries_owner on public.lending_entries
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ── Ledger snapshots (backups) ─────────────────────────────────────────
 -- Point-in-time copies of the ledger. A snapshot stores the whole ledger

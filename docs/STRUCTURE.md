@@ -54,9 +54,16 @@ Three entry points:
 | `AppInner` (private) | prop | both |
 
 Nav ids: `overview`, `add`, `transactions`, `budgets`, `categories`,
-`backups`, `settings`. Mobile nav hides `backups` and pins `settings` at the
-right; it labels buttons with `item.label.split(' ')[0]`, so **the first word
-of a nav label must stand alone**.
+`lending`, `backups`, `settings`. It labels mobile buttons with
+`item.label.split(' ')[0]`, so **the first word of a nav label must stand
+alone** — which is why the lending tab is called "Lending" and not "Lending &
+borrowing".
+
+`MOBILE_HIDDEN` keeps `settings`, `backups` and `categories` off the phone's
+bottom bar, because seven buttons across a phone leaves each too narrow for its
+label. `settings` is pinned at the right of the bar instead; the other two are
+reached from inside Settings. **Anything added to `MOBILE_HIDDEN` must have a
+link from `SettingsView`, or that screen is stranded on a phone.**
 
 ---
 
@@ -68,7 +75,8 @@ of a nav label must stand alone**.
 | Add entry | `views/AddEntry.js` | the two-sided entry form + today's list |
 | Ledger | `views/Transactions.js` | cycle list, side/category/text filters, edit modal |
 | Budgets | `views/Budgets.js` | total + per-category allocation, carry-forward state |
-| Categories | `views/Categories.js` | **both** taxonomies behind a two-tab switch |
+| Categories | `views/Categories.js` | **both** spend taxonomies behind a two-tab switch |
+| Lending | `views/Lending.js` | money to/from friends — people, balances, entries |
 | Backups | `views/Backups.js` | snapshots list + read-only archive viewer + CSV |
 | Settings | `views/SettingsView.js` | account, income, reset day, exports, danger zone |
 
@@ -117,6 +125,22 @@ Dining" reads "Food") on a `grid-cols-4 sm:grid-cols-5`; credit chips show the
 full `s.name` on `grid-cols-4`, because source names are short and "Transfer"
 alone would be ambiguous.
 
+### Lending — the screen that is not cycle-scoped
+
+`views/Lending.js` ignores the `monthKey` every other view reads, and that is
+deliberate: a debt does not reset on the 7th. What someone owes you is
+cumulative until it is paid, so every figure on this screen walks the whole
+list. Same reasoning as the carry-forward strip on Overview.
+
+It manages its own taxonomy too. `people` is not on the Categories screen
+because that screen is the spend/credit pair — where money goes and where it
+comes from — and a friend is neither. Adding and editing people happens where
+the balances are.
+
+The entry form is two-sided like Add entry, and must stay that way: everything
+a "You gave" entry records, a "You got" entry records too. Accents follow the
+rest of the app — amber for money leaving, green for money arriving.
+
 ---
 
 ## 4. The store contract
@@ -131,11 +155,13 @@ other in the same change**, or `/demo` breaks.
 | Network | yes | **none** |
 
 ```
-State      categories  creditSources  transactions  budgets  totals
-           settings  snapshots  hydrated  userId  userEmail
+State      categories  creditSources  people  transactions  lendingEntries
+           budgets  totals  settings  snapshots  hydrated  userId  userEmail
 Entries    addTransaction  updateTransaction  deleteTransaction
 Taxonomy   addCategory  updateCategory  deleteCategory
            addCreditSource  updateCreditSource  deleteCreditSource
+           addPerson  updatePerson  deletePerson
+Lending    addLendingEntry  updateLendingEntry  deleteLendingEntry
 Budgets    setBudget  budgetFor  budgetOriginFor
            setMonthlyTotal  monthlyTotalFor  monthlyTotalOriginFor
            rolloverTotalFor  rolloverForCategory
@@ -154,13 +180,21 @@ Client shapes (camelCase; the store maps from snake_case rows):
 tx     { id, kind, amount, categoryId, sourceId, source, date, note, method, createdAt }
 cat    { id, name, color, icon, defaultBudget }
 source { id, name, color, icon, offsetsSpend }
+person { id, name, color, icon }
+lend   { id, personId, person, direction, amount, date, note, method, createdAt }
 budgets{ 'YYYY-MM': { categoryId: amount } }
 totals { 'YYYY-MM': amount }
 setting{ monthlyIncome, currency, carryForward, cycleResetDay, openingBalance }
 ```
 
 Both stores tolerate a table that does not exist yet (pre-migration) by
-falling back to `[]` rather than failing to boot.
+falling back to `[]` rather than failing to boot — that now covers `people` and
+`lending_entries` as well as `credit_sources` and `ledger_snapshots`.
+
+`clearAllData` deliberately does **not** touch the lending tables. The button
+that calls it promises "all your transactions and budgets"; silently wiping the
+record of who owes you money would be a nasty surprise, and that money is
+outside this ledger by design.
 
 ---
 
@@ -221,6 +255,26 @@ instead of leaving a stale total behind. `openingBalance` of 0 is valid and
 means "net since you started tracking". **Never pass these helpers a
 category-filtered list** — income has no category, so a slice drops every credit.
 
+**Lending is not spending, and being repaid is not income.** Money between you
+and a friend lives in its own two tables and never reaches `netSpend`,
+`netFlow`, a budget or the running cash balance. It buys nothing, so it has no
+category; it is not yours to keep, so it is in no budget. Same discipline as
+everywhere else: `amount` is always positive and the direction lives in
+`direction` (`'out'` money you handed over, `'in'` money you received).
+
+**A repayment is an entry the other way — there is no "settled" flag.** A flag
+can disagree with the entries under it, and a part-repayment has nowhere to go.
+Balance with a person is always derived as (out − in): positive means they owe
+you, negative means you owe them.
+
+**Two lending figures, never one.** `lendingTotals()` returns `owedToYou` and
+`youOwe` summed **per person** and kept apart. Netting them into one number
+would report "all square" while one friend owes you ₹5,000 and you owe another
+₹5,000. Entries whose person has been deleted keep a bucket of their own, keyed
+by the name frozen on them, so two removed friends never net against each
+other. `person_id` + `person` are stored together for exactly the reason
+`source_id` + `source` are.
+
 `budgetOriginFor` / `monthlyTotalOriginFor` return `{ amount, base, rollover,
 origin, from }` where `amount` is the **effective** figure (base + rollover) so
 no two screens can disagree. **Populate any input from `base`, never `amount`**
@@ -242,6 +296,8 @@ existing project runs, **in order**.
 | `budgets` | month_key, category_id, amount — unique per (user, month, category) |
 | `monthly_totals` | month_key, amount |
 | `user_settings` | monthly_income, currency, carry_forward, cycle_reset_day (1–28), opening_balance |
+| `people` | name, color, icon |
+| `lending_entries` | person_id, person, direction ('out'/'in'), amount (>0), date, note, method |
 | `ledger_snapshots` | label, source, payload jsonb, tx_count, total_amount |
 
 Every table has RLS keyed on `auth.uid() = user_id`. `ledger_snapshots` is
@@ -250,7 +306,12 @@ append-only: no UPDATE policy, plus a trigger that rejects updates outright.
 credit sources.
 
 Migrations: `001` cycle reset day + snapshots · `002` credits alongside debits
-· `003` editable credit sources · `004` opening balance.
+· `003` editable credit sources · `004` opening balance · `005` the lending
+ledger.
+
+`handle_new_user()` seeds neither people nor lending entries, on purpose:
+whose names belong in that table is personal, and a starter list of invented
+friends is noise every user has to delete.
 
 **Rules.** Additive only — no `DROP TABLE`, `DROP COLUMN`, `DELETE`,
 `TRUNCATE`. Safe to re-run. Existing rows keep their meaning. Mirror every
@@ -270,8 +331,10 @@ to `ICON_MAP` or it silently renders as `MoreHorizontal`.**
 
 UI primitives in `components/ui/`: `Panel` (title/eyebrow/action/noPad),
 `Modal`, `Gauge`, `MonthSwitcher`, `MultiSelect`, `Toast` (`useToast()`),
-`ThemeToggle`. `components/CategoryModal.js` edits either taxonomy via
-`variant="category" | "source"`.
+`ThemeToggle`. `components/CategoryModal.js` edits any of the three taxonomies via
+`variant="category" | "source" | "person"` — name, colour and icon for all
+three; a budget only for a category, a "usually a refund" default only for a
+source, neither for a person.
 
 Theme is a `dark` class on `<html>`, persisted in `localStorage`; colours are
 CSS variables in `app/globals.css` surfaced as Tailwind tokens
@@ -295,6 +358,13 @@ chain shows **both** signs against this ledger — the early cycles overspend an
 hand a deficit forward, the current one opens about +3,600 up. Re-tune it if
 the generator's spend changes, or half the feature stops being visible.
 
+The lending ledger is seeded from a **fixed table**, not from the PRNG — five
+invented friends covering every state the screen can show: a debt part-repaid,
+a debt you owe part-repaid, one settled exactly to zero, and one plain balance
+each way. Keeping it off `rand` is what stops adding a friend from shifting a
+single figure in the spend ledger above, including the seeded total the
+rollover chain is tuned against. **Do not feed these entries from `rand`.**
+
 Rules: no network calls; no unseeded `Math.random()` or within-day varying
 time; never seed data dated after today. To make a new feature reviewable, add
 representative rows here — the demo is only useful if the case you changed is
@@ -311,6 +381,10 @@ key), reads every table, writes `backups/ledger-<stamp>.json`, and inserts the
 same payload into `ledger_snapshots`. It only ever READs the live tables. New
 tables must be added here too or backups quietly lose them.
 
+Payload versions: v1 debits only · v2 adds `kind` and `source` · v3 adds
+`people` and `lendingEntries`. An older payload is not broken, it simply has
+none of the newer parts, which reads the same as never having used them.
+
 ---
 
 ## 10. Tests
@@ -318,7 +392,12 @@ tables must be added here too or backups quietly lose them.
 `npm test` (vitest, `vitest.config.mjs` mirrors the `@/` alias). Node
 environment, no jsdom — `tests/helpers/callHook.js` exercises
 `useBudgetSelectors` through a one-shot server render, which is enough because
-the hook is `useMemo`/`useCallback` only.
+the hook is `useMemo`/`useCallback` only. A view is tested the same way, with
+`renderToStaticMarkup`.
+
+`vitest.config.mjs` also carries a small plugin that parses `.js` files
+containing JSX as JSX. Next infers that from context; Vite goes by the file
+extension, so without it a test cannot import a component at all.
 
 | File | Guards |
 |---|---|
@@ -327,11 +406,14 @@ the hook is `useMemo`/`useCallback` only.
 | `tests/ledgerTotals.test.js` | debit/refund/income classification, `netSpend` vs `netFlow`, source label surviving deletion |
 | `tests/rollover.test.js` | carried vs rollover kept apart, both chains, the `base` vs `amount` double-count trap |
 | `tests/demoData.test.js` | determinism, never seeds the future, both credit flavours present, the demo's own cash chain |
+| `tests/lending.test.js` | direction carries the sign, a repayment nets down, the two headline figures never cancel, deleted people keep separate buckets, and lending never reaches the spend ledger |
+| `tests/lendingView.test.js` | the Lending screen renders, states each balance the right way round, and survives an empty store |
 
 These are money calculations, so the suite is mutation-checked: breaking the
 boundary comparison in `cashBalanceBefore`, dropping the opening-balance anchor,
-reclassifying refunds as income, keying cycles by calendar month, or baking
-rollover into `base` each make it fail. **If you change a financial rule and
+reclassifying refunds as income, keying cycles by calendar month, baking
+rollover into `base`, netting the two lending figures into one, or pooling
+every deleted friend into a single bucket each make it fail. **If you change a financial rule and
 nothing goes red, the test for it is missing — add it before shipping.**
 
 ---
@@ -339,7 +421,7 @@ nothing goes red, the test for it is missing — add it before shipping.**
 ## 11. Change checklist
 
 - [ ] Read this file, and the files the change actually touches.
-- [ ] Both sides of a two-sided feature updated (debit *and* credit).
+- [ ] Both sides of a two-sided feature updated (debit *and* credit, gave *and* got).
 - [ ] Both stores updated if the store contract changed.
 - [ ] `lib/demoData.js` shows the new case.
 - [ ] Migration written **and** mirrored into `schema.sql`.

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, Archive, Settings as SettingsIcon, Gauge as GaugeIcon } from 'lucide-react';
+import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, HandCoins, Archive, Settings as SettingsIcon, Gauge as GaugeIcon } from 'lucide-react';
 import { useFinanceStore } from '@/lib/useFinanceStore';
 import { currentCycleKey, DEFAULT_CYCLE_RESET_DAY } from '@/lib/utils';
 import { ToastProvider } from '@/components/ui/Toast';
@@ -12,8 +12,16 @@ import AddEntry from '@/components/views/AddEntry';
 import Transactions from '@/components/views/Transactions';
 import Budgets from '@/components/views/Budgets';
 import Categories from '@/components/views/Categories';
+import Lending from '@/components/views/Lending';
 import Backups from '@/components/views/Backups';
 import SettingsView from '@/components/views/SettingsView';
+
+// Kept off the phone's bottom bar. Seven buttons across a phone leaves each
+// one too narrow for its label — "Categories" alone is wider than the slot —
+// so the two you reach for least often live one tap away inside Settings
+// instead, which is pinned to the right of the bar. Nothing is stranded:
+// anything listed here must have a link from SettingsView.
+const MOBILE_HIDDEN = ['settings', 'backups', 'categories'];
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: LayoutGrid },
@@ -21,6 +29,9 @@ const NAV_ITEMS = [
   { id: 'transactions', label: 'Ledger', icon: ListChecks },
   { id: 'budgets', label: 'Budgets', icon: PieChart },
   { id: 'categories', label: 'Categories', icon: Tags },
+  // "Lending" is one word on purpose: the mobile bar labels a button with the
+  // first word of its label, so a two-word name would be cut in half.
+  { id: 'lending', label: 'Lending', icon: HandCoins },
   { id: 'backups', label: 'Backups', icon: Archive },
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
@@ -120,6 +131,7 @@ function AppInner({ store, banner = null }) {
           {tab === 'transactions' && <Transactions {...viewProps} />}
           {tab === 'budgets' && <Budgets {...viewProps} />}
           {tab === 'categories' && <Categories {...viewProps} />}
+          {tab === 'lending' && <Lending {...viewProps} />}
           {tab === 'backups' && <Backups {...viewProps} />}
           {tab === 'settings' && <SettingsView {...viewProps} />}
         </div>
@@ -127,7 +139,7 @@ function AppInner({ store, banner = null }) {
 
       {/* Mobile bottom nav */}
       <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-ink-800/95 backdrop-blur border-t border-ink-border px-2 py-1.5 flex items-center justify-between">
-        {NAV_ITEMS.filter((i) => i.id !== 'settings' && i.id !== 'backups').map((item) => {
+        {NAV_ITEMS.filter((i) => !MOBILE_HIDDEN.includes(i.id)).map((item) => {
           const Icon = item.icon;
           const active = tab === item.id;
           const isAdd = item.id === 'add';
