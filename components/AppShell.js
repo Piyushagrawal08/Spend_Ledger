@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, HandCoins, Archive, Settings as SettingsIcon, Gauge as GaugeIcon } from 'lucide-react';
+import { LayoutGrid, PlusCircle, ListChecks, PieChart, Tags, HandCoins, Archive, Settings as SettingsIcon, Gauge as GaugeIcon, LogOut } from 'lucide-react';
 import { useFinanceStore } from '@/lib/useFinanceStore';
 import { currentCycleKey, DEFAULT_CYCLE_RESET_DAY } from '@/lib/utils';
 import { ToastProvider } from '@/components/ui/Toast';
@@ -41,6 +41,7 @@ function AppInner({ store, banner = null }) {
   // Null until the user picks a cycle, so the default follows the reset day
   // once settings arrive rather than sticking on the calendar month.
   const [pickedKey, setPickedKey] = useState(null);
+  const [signingOut, setSigningOut] = useState(false);
   const resetDay = store.settings?.cycleResetDay ?? DEFAULT_CYCLE_RESET_DAY;
   const monthKey = pickedKey ?? currentCycleKey(resetDay);
   const setMonthKey = setPickedKey;
@@ -69,6 +70,17 @@ function AppInner({ store, banner = null }) {
   if (!store.userId) return null;   // the effect above is doing the redirect
 
   const viewProps = { store, monthKey, setMonthKey, goTo: setTab };
+
+  // Same store.signOut the Settings button uses. The real store redirects to
+  // /login; the demo store reseeds and stays put, so the label is reset after.
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      await store.signOut();
+    } finally {
+      setSigningOut(false);
+    }
+  }
 
   return (
     <div className="min-h-screen flex">
@@ -105,6 +117,18 @@ function AppInner({ store, banner = null }) {
         </nav>
         <div className="px-3 py-4 border-t border-ink-border space-y-1">
           <ThemeToggle />
+          {/* Desktop only, like the rest of this sidebar. On a phone, sign out
+              lives on the Settings screen, one tap from the bottom bar. */}
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-paper-300 hover:bg-ink-800 hover:text-signal-red transition-colors disabled:opacity-60"
+          >
+            <span className="w-8 flex items-center justify-center shrink-0">
+              <LogOut size={16} />
+            </span>
+            {signingOut ? 'Signing out…' : 'Log out'}
+          </button>
           <div className="px-3 pt-2 text-[10px] font-mono text-paper-500 truncate">
             {store.userEmail || 'signed in'}
           </div>

@@ -45,7 +45,10 @@ export default function RootLayout({ children }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: NO_FLASH_SCRIPT }} />
       </head>
-      <body className="bg-ink-900 text-paper-100 font-body antialiased">
+      {/* Browser extensions (Grammarly, password managers) stamp attributes on
+          <body> before React hydrates. This silences that one element only —
+          it does not reach any child, so real mismatches still surface. */}
+      <body className="bg-ink-900 text-paper-100 font-body antialiased" suppressHydrationWarning>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>

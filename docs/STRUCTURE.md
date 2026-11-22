@@ -59,6 +59,16 @@ Nav ids: `overview`, `add`, `transactions`, `budgets`, `categories`,
 alone** — which is why the lending tab is called "Lending" and not "Lending &
 borrowing".
 
+The sidebar's foot holds the theme toggle, a **Log out** button and the
+signed-in email. Log out calls the same `store.signOut` as the button on
+Settings — which is the phone's only way out, since the sidebar is desktop-only.
+In the demo, `signOut` reseeds the data rather than leaving.
+
+`ui/Modal` renders through a portal into `<body>`. Every view wraps itself in
+`animate-rise`, whose fill-mode leaves a transform on the wrapper, and a
+transformed ancestor captures `position: fixed` — rendered in place, a dialog
+centres on the whole view instead of the window.
+
 `MOBILE_HIDDEN` keeps `settings`, `backups` and `categories` off the phone's
 bottom bar, because seven buttons across a phone leaves each too narrow for its
 label. `settings` is pinned at the right of the bar instead; the other two are
