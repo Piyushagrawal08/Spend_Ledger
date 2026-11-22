@@ -337,7 +337,10 @@ function PersonCard({ row, focused, onFocus, onLog, onSettle, onEdit, onDelete }
           >
             {person.name}
           </button>
-          <div className={classNames('text-[11px] font-mono mt-0.5 truncate', tone)}>
+          {/* Wraps rather than truncates: the amount sits at the end of this
+              line, so cutting it off in a narrow three-across card hides the
+              one number the card exists to show. */}
+          <div className={classNames('text-[11px] font-mono mt-0.5 break-words', tone)}>
             {lendingBalanceLabel(person.name, balance)}
           </div>
           <div className="text-[10px] font-mono text-paper-500 mt-0.5">

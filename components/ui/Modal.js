@@ -2,6 +2,7 @@
 
 import { X } from 'lucide-react';
 import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 export default function Modal({ open, onClose, title, children }) {
   useEffect(() => {
@@ -12,9 +13,14 @@ export default function Modal({ open, onClose, title, children }) {
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || typeof document === 'undefined') return null;
 
-  return (
+  // Rendered into <body>, not in place. Every view wraps itself in
+  // `animate-rise`, whose fill-mode leaves a transform on the wrapper, and a
+  // transformed ancestor becomes the containing block for `position: fixed`.
+  // In place, the overlay would size itself to the whole view and centre the
+  // dialog halfway down a long list instead of in the window.
+  return createPortal(
     <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-ink-950/80 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full sm:max-w-md sm:mx-4 max-h-[88vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl border border-ink-border bg-ink-800 shadow-panel animate-rise">
@@ -26,6 +32,7 @@ export default function Modal({ open, onClose, title, children }) {
         </div>
         <div className="p-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
